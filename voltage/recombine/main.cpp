@@ -155,8 +155,6 @@ int main(int argc, char **argv) {
 	// check if we need to swap channels; if so swap them.
 	course_channel_swap(&in, &out, &course_swap_index);
 
-	printf("%d\n", course_swap_index);
-
 	course_chan_input_array input;
 	course_chan_output_array output;
 	ics_handle ics_handle;
