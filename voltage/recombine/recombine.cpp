@@ -210,6 +210,7 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 			return errno;
 	}
 
+	unsigned short deadblocks = 0;
 	unsigned short ics = 0;
 	unsigned char ics_byte = 0;
 	char* mem = NULL;
@@ -246,6 +247,7 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 							ten_kHz_offset = ten_kHz * 64;
 
 							ics = 0;
+							deadblocks = 0;
 
 							for (int pfb_no = 0; pfb_no < 4; ++pfb_no) {
 
@@ -258,8 +260,13 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 								}
 
 								if (!skipics) {
-									for (unsigned int tile = 0; tile < 64; ++tile) {
-										ics += byte_to_sum[(unsigned char)mem[tile]];
+									if (inputs.m_input_matrix[pfb_no][lane_id].pad_input) {
+										deadblocks += 1;
+									}
+									else {
+										for (unsigned int tile = 0; tile < 64; ++tile) {
+											ics += byte_to_sum[(unsigned char)mem[tile]];
+										}
 									}
 								}
 
@@ -267,7 +274,10 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 
 							if (!skipics) {
 								// normalisation: number of ants * num pols
-								ics_byte = (unsigned char)(ics / 256);
+								if (deadblocks >= 1)
+									ics_byte = (unsigned char)(ics / (256-deadblocks*64));
+								else
+									ics_byte = 0;
 
 								// copy ics 1 byte value into buffer
 								memcpy(ics_buffer+ics_buffer_index, &ics_byte, sizeof(unsigned char));
