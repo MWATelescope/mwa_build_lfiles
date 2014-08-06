@@ -273,10 +273,21 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 							} // end 4 lots of 64
 
 							if (!skipics) {
-								// normalisation: number of ants * num pols
-								if (deadblocks >= 1)
-									ics_byte = (unsigned char)(ics / (256-deadblocks*64));
+								// normalisation: if at least 1 input has data then we will scale for missing inputs
+								if (deadblocks < 4) {
+									// 5: the number that Dr Brian (1st class honors Magnetic Therapy) pulled out of his ass
+									// vague justification: if avg amplitude was the maximum allowed at any phase then total sum would still fit in one byte (char)
+									// (256-deadblocks*64): normalise based on the number of contributing tiles
+									ics = (ics * 5) / (256-deadblocks*64);
+									if (ics > 255)
+										ics = 255; // clipping to a bytes worth for demotion to char; should only occur once other parts of system are non-linear
+
+									ics_byte = (unsigned char)(ics);
+
+									//ics_byte = (unsigned char)(ics / (256-deadblocks*64));
+								}
 								else
+									// if there are not inputs at all for the 10kHz channel then we set the sum to zero
 									ics_byte = 0;
 
 								// copy ics 1 byte value into buffer
