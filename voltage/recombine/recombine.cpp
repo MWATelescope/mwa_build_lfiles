@@ -161,8 +161,6 @@ void course_channel_swap(const course_chan_freq* in, course_chan_freq* out, unsi
 		}
 	}
 
-
-
 	// no channels to swap
 	*course_swap_index = 24;
 
@@ -192,14 +190,15 @@ inline int zero_copy_buffer_write(int out_fd, char* buffer, size_t buffsize)
 	if (pipe(fd) != 0)
 		return errno;
 
-	//int pipe_sz = fcntl(fd[1], F_SETPIPE_SZ, 1048576);
+	int pipe_sz = fcntl(fd[1], F_SETPIPE_SZ, 1048576);
 	//printf("pipesize %d\n", pipe_sz);
 
 	size_t offset = 0;
 	size_t toread = buffsize;
 
+	struct iovec iov;
+
 	while (offset < buffsize) {
-		struct iovec iov;
 		iov.iov_base = buffer + offset;
 		iov.iov_len = toread;
 
@@ -209,10 +208,13 @@ inline int zero_copy_buffer_write(int out_fd, char* buffer, size_t buffsize)
 			close(fd[1]);
 			return errno;
 		}
-		ssize_t sret = 0;
 
-		do {
-			sret = splice(fd[0], NULL, out_fd, NULL, toread, SPLICE_F_MOVE|SPLICE_F_NONBLOCK);
+		ssize_t sret = 0;
+		ssize_t totalvm = vmsret;
+		ssize_t totalsplice = 0;
+
+		while (totalvm > 0) {
+			sret = splice(fd[0], NULL, out_fd, NULL, totalvm, SPLICE_F_MOVE|SPLICE_F_NONBLOCK);
 			if (sret <= 0) {
 				if (errno == EAGAIN || errno == EWOULDBLOCK)
 					break;
@@ -223,13 +225,17 @@ inline int zero_copy_buffer_write(int out_fd, char* buffer, size_t buffsize)
 				}
 			}
 
-			toread -= sret;
-			offset += sret;
-		} while (sret > 0);
+			totalvm -= sret;
+		}
+
+		assert(totalvm == 0);
+
+		toread -= vmsret;
+		offset += vmsret;
 	}
 
-	if (fsync(out_fd) < 0)
-		return errno;
+	//if (fsync(out_fd) < 0)
+	//	return errno;
 
 	assert(toread == 0);
 
@@ -433,83 +439,6 @@ Error:
 	return retcode;
 }
 
-int open_input_from_socket(course_chan_input_array* input, unsigned short portno)
-{
-	int parentfd; /* parent socket */
-	int childfd; /* child socket */
-	unsigned int clientlen; /* byte size of client's address */
-	struct sockaddr_in serveraddr; /* server's addr */
-	struct sockaddr_in clientaddr; /* client addr */
-	struct hostent *hostp; /* client host info */
-	char *hostaddrp; /* dotted decimal host addr string */
-	int optval; /* flag value for setsockopt */
-
-	//socket: create the parent socket
-	parentfd = socket(AF_INET, SOCK_STREAM, 0);
-	if (parentfd < 0)
-		return errno;
-
-	/* setsockopt: Handy debugging trick that lets
-	* us rerun the server immediately after we kill it;
-	* otherwise we have to wait about 20 secs.
-	* Eliminates "ERROR on binding: Address already in use" error.
-	*/
-	optval = 1;
-	setsockopt(parentfd, SOL_SOCKET, SO_REUSEADDR, (const void *)&optval , sizeof(int));
-
-
-	//build the server's Internet address
-	bzero((char *) &serveraddr, sizeof(serveraddr));
-
-	//this is an Internet address
-	serveraddr.sin_family = AF_INET;
-
-	// let the system figure out our IP address
-	serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-	// this is the port we will listen on
-	serveraddr.sin_port = htons((unsigned short)portno);
-
-	//bind: associate the parent socket with a port
-	if (bind(parentfd, (struct sockaddr *) &serveraddr, sizeof(serveraddr)) < 0)
-		return errno;
-
-	//listen: make this socket ready to accept connection requests
-
-	if (listen(parentfd, 32) < 0)
-		return errno;
-
-
-	clientlen = sizeof(clientaddr);
-
-	// We only want 32 connection inputs
-	for (int i = 0; i < 32; ++i) {
-
-		 //accept: wait for a connection request
-		childfd = accept(parentfd, (struct sockaddr *) &clientaddr, &clientlen);
-		if (childfd < 0)
-		  return errno;
-
-		 //gethostbyaddr: determine who sent the message
-		hostp = gethostbyaddr((const char *)&clientaddr.sin_addr.s_addr, sizeof(clientaddr.sin_addr.s_addr), AF_INET);
-		if (hostp == NULL)
-		  return errno;
-
-		hostaddrp = inet_ntoa(clientaddr.sin_addr);
-		if (hostaddrp == NULL)
-		  return errno;
-
-		printf("Established connection with %s (%s)\n", hostp->h_name, hostaddrp);
-
-		// populate
-		input->m_handles[i].m_handle = childfd;
-		strcpy(input->m_handles[i].m_id, hostp->h_name);
-	}
-
-	return 0;
-}
-
-
 int open_input_from_directory(const char* directory, course_chan_input_array* input)
 {
 	unsigned int count = 0;
@@ -527,8 +456,14 @@ int open_input_from_directory(const char* directory, course_chan_input_array* in
 			strcpy(input->m_handles[count].m_id, ep->d_name);
 
 			std::string full = std::string(directory) + "/" + name;
-			if ((input->m_handles[count].m_handle = open(full.c_str(), O_RDONLY)) < 0)
+			if ((input->m_handles[count].m_handle = open(full.c_str(), O_RDONLY)) < 0) {
 				input->m_handles[count].pad_input = true; // input failed to open; pad stream with zeros
+			}
+			else {
+				struct stat st;
+				assert(fstat(input->m_handles[count].m_handle, &st) != -1);
+				posix_fadvise(input->m_handles[count].m_handle, 0, st.st_size, POSIX_FADV_SEQUENTIAL|POSIX_FADV_WILLNEED);
+			}
 
 			count+=1;
 
@@ -580,8 +515,14 @@ int open_input_from_file_list(const char* input_file_list, course_chan_input_arr
 int open_input_from_file(course_chan_input_array* input)
 {
 	for (int i = 0; i < 32; ++i)
-		if ((input->m_handles[i].m_handle = open(input->m_handles[i].m_id, O_RDONLY)) < 0)
+		if ((input->m_handles[i].m_handle = open(input->m_handles[i].m_id, O_RDONLY)) < 0) {
 			input->m_handles[i].pad_input = true; // input failed to open; pad stream with zeros
+		}
+		else {
+			struct stat st;
+			assert(fstat(input->m_handles[i].m_handle, &st) != -1);
+			posix_fadvise(input->m_handles[i].m_handle, 0, st.st_size, POSIX_FADV_SEQUENTIAL|POSIX_FADV_WILLNEED);
+		}
 
 	return 0;
 }

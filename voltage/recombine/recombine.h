@@ -69,7 +69,6 @@ void course_channel_swap(const course_chan_freq* in, course_chan_freq* out, unsi
 int recombine(course_chan_input_array* input, course_chan_output_array* output, ics_handle* ics_out, unsigned int course_swap_index, bool skipics, bool skipcourse);
 int read_from_input(course_chan_input_matrix* matrix, course_chan_input_array* input);
 
-int open_input_from_socket(course_chan_input_array* input, unsigned short portno);
 int open_input_from_directory(const char* directory, course_chan_input_array* input);
 int open_input_from_file_list(const char* input_file_list, course_chan_input_array* input);
 int open_input_from_file(course_chan_input_array* input);
