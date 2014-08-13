@@ -10,8 +10,11 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <sys/uio.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <dirent.h>
+#include <malloc.h>
 
 #include <netdb.h>
 #include <sys/types.h>
@@ -34,6 +37,7 @@ static unsigned short byte_to_sum[256] = {
 };
 
 #define ICS_BUFF 30720000
+#define COURSE_CHAN_BUFF 64000*256
 
 unsigned short twoCompNibbleSquared[16] = { 0, 1, 4, 9, 16, 25, 36, 49, 64, 49, 36, 25, 16, 9, 4, 1  };
 
@@ -182,8 +186,65 @@ void course_channel_swap(const course_chan_freq* in, course_chan_freq* out, unsi
 }
 
 
+inline int zero_copy_buffer_write(int out_fd, char* buffer, size_t buffsize)
+{
+	int	fd[2];
+	if (pipe(fd) != 0)
+		return errno;
+
+	//int pipe_sz = fcntl(fd[1], F_SETPIPE_SZ, 1048576);
+	//printf("pipesize %d\n", pipe_sz);
+
+	size_t offset = 0;
+	size_t toread = buffsize;
+
+	while (offset < buffsize) {
+		struct iovec iov;
+		iov.iov_base = buffer + offset;
+		iov.iov_len = toread;
+
+		ssize_t vmsret = vmsplice(fd[1], &iov, 1, SPLICE_F_GIFT);
+		if (vmsret < 0) {
+			close(fd[0]);
+			close(fd[1]);
+			return errno;
+		}
+		ssize_t sret = 0;
+
+		do {
+			sret = splice(fd[0], NULL, out_fd, NULL, toread, SPLICE_F_MOVE|SPLICE_F_NONBLOCK);
+			if (sret <= 0) {
+				if (errno == EAGAIN || errno == EWOULDBLOCK)
+					break;
+				else {
+					close(fd[0]);
+					close(fd[1]);
+					return errno;
+				}
+			}
+
+			toread -= sret;
+			offset += sret;
+		} while (sret > 0);
+	}
+
+	if (fsync(out_fd) < 0)
+		return errno;
+
+	assert(toread == 0);
+
+	close(fd[0]);
+	close(fd[1]);
+
+	return 0;
+
+}
+
+
 int recombine(course_chan_input_array* input, course_chan_output_array* output, ics_handle* ics_out, unsigned int course_swap_index, bool skipics, bool skipcourse)
 {
+	int retcode = 0;
+
 	course_chan_input_matrix inputs;
 
 	memset(&inputs, 0, sizeof(course_chan_input_matrix));
@@ -195,18 +256,9 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 	uint64_t file_buffer_index[24];
 
 	for (int b = 0; b < 24; b++) {
-		file_buffer[b] = (char*)malloc(64000*256);
-
+		//file_buffer[b] = (char*)malloc(64000*256);
+		file_buffer[b] = (char*)memalign(getpagesize(), COURSE_CHAN_BUFF);
 		if (file_buffer[b] == NULL)
-			return errno;
-	}
-
-	char* ics_buffer = NULL;
-	uint64_t ics_buffer_index = 0;
-
-	if (!skipics) {
-		ics_buffer = (char*)malloc(ICS_BUFF);
-		if (ics_buffer == NULL)
 			return errno;
 	}
 
@@ -220,14 +272,28 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 	int64_t freq_group_offset = 0;
 	int64_t ten_kHz_offset = 0;
 
+	char* ics_buffer = NULL;
+	uint64_t ics_buffer_index = 0;
+
+	if (!skipics) {
+		//ics_buffer = (char*)malloc(ICS_BUFF);
+		ics_buffer = (char*)memalign(getpagesize(), ICS_BUFF);
+		if (ics_buffer == NULL) {
+			retcode = errno;
+			goto Error;
+		}
+	}
+
 	// Read in 50ms chunks which is 48000 packets
 	for (int ms = 0; ms < 20; ms++) {
 
 		memset(file_buffer_index, 0, sizeof(file_buffer_index));
 
 		int read = read_from_input(&inputs, input);
-		if (read < 0)
-			return errno;
+		if (read < 0) {
+			retcode = errno;
+			goto Error;
+		}
 
 		for (int t_sample = 0; t_sample < 500; ++t_sample) {
 			t_sample_offset = t_sample * 264;
@@ -306,17 +372,26 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 		}
 
 		if (!skipcourse) {
+
 			//write out each course channel
 			for (int c = 0; c < 24; c++) {
+
+				/*if (zero_copy_buffer_write(output->m_handles[c].m_handle, file_buffer[c], COURSE_CHAN_BUFF) != 0) {
+					retcode = errno;
+					goto Error;
+				}*/
 
 				uint64_t written = 0;
 				uint64_t total_written = 0;
 
-				while ((written = write(output->m_handles[c].m_handle, file_buffer[c]+total_written, (64000*256)-total_written)) > 0)
+				while ((written = write(output->m_handles[c].m_handle, file_buffer[c]+total_written, (COURSE_CHAN_BUFF)-total_written)) > 0)
 					total_written += written;
 
-				if (total_written != (64000*256))
-					return errno;
+				if (total_written != (COURSE_CHAN_BUFF)) {
+					retcode = errno;
+					goto Error;
+				}
+
 			}
 		}
 
@@ -324,6 +399,12 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 
 
 	if (!skipics) {
+
+		/*if (zero_copy_buffer_write(ics_out->m_handle, ics_buffer, ICS_BUFF) != 0) {
+			retcode = errno;
+			goto Error;
+		}*/
+
 		// write out ics buffers
 		uint64_t written_ics = 0;
 		uint64_t total_written_ics = 0;
@@ -331,10 +412,14 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 		while ((written_ics = write(ics_out->m_handle, ics_buffer+total_written_ics, (ICS_BUFF)-total_written_ics)) > 0)
 			total_written_ics += written_ics;
 
-		if (total_written_ics != (ICS_BUFF))
-			return errno;
+		if (total_written_ics != (ICS_BUFF)) {
+			retcode = errno;
+			goto Error;
+		}
 	}
 
+
+Error:
 	for (int i = 0; i < 4; i++)
 		for (int j = 0; j < 8; j++)
 			free(inputs.m_input_matrix[i][j].m_buff);
@@ -345,7 +430,7 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 	if (!skipics)
 		free(ics_buffer);
 
-	return 0;
+	return retcode;
 }
 
 int open_input_from_socket(course_chan_input_array* input, unsigned short portno)
