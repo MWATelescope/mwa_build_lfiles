@@ -1,0 +1,17 @@
+
+This directory contains:
+build_lfiles: code for converting raw correlator output (O-files) to more conventional L-files
+read_mwac: decodes O-files like build_lfiles, but writes output stream to a pipe
+uvcompress: compress O-files
+
+Requires: cfitsio, openmp
+
+to build:
+make
+
+to install:
+make install    # to install to /usr/local/bin
+make prefix=<basedir> install   # to install elsewhere
+
+where basedir is something like /usr/local or $HOME. It creates a subdir (if necessary) called bin and puts the programs in there.
+
