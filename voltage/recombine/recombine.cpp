@@ -190,7 +190,7 @@ inline int zero_copy_buffer_write(int out_fd, char* buffer, size_t buffsize)
 	if (pipe(fd) != 0)
 		return errno;
 
-	int pipe_sz = fcntl(fd[1], F_SETPIPE_SZ, 1048576);
+	//int pipe_sz = fcntl(fd[1], F_SETPIPE_SZ, 1048576);
 	//printf("pipesize %d\n", pipe_sz);
 
 	size_t offset = 0;
