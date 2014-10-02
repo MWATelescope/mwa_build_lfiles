@@ -1,4 +1,3 @@
-#!/usr/bin/python
 import sys, base64, os, socket, signal
 import urllib2, urllib, httplib, time
 import threading
@@ -9,10 +8,10 @@ import pyinotify
 from Queue import LifoQueue
 from threading import Condition, Thread
 from collections import deque
-from ConfigParser import SafeConfigParser
 from BaseHTTPServer import HTTPServer
 from BaseHTTPServer import BaseHTTPRequestHandler
 import urlparse, json
+import logging, logging.handlers
 
 
 USE_SENDFILE = False
@@ -21,31 +20,6 @@ try:
    USE_SENDFILE = True
 except ImportError as e:
    pass
-
-
-import logging, logging.handlers
-
-APP_PATH = os.path.dirname(os.path.realpath(__file__))
-path = APP_PATH + '/log/'
-
-if not os.path.exists(path):
-   os.makedirs(path)
-
-logger = logging.getLogger('archive')
-logger.setLevel(logging.DEBUG)
-logger.propagate = False
-rot = logging.handlers.RotatingFileHandler(path + 'archive.log', maxBytes=33554432)
-rot.setLevel(logging.DEBUG)
-rot.setFormatter(logging.Formatter('%(asctime)s, %(levelname)s, %(message)s'))
-logger.addHandler(rot)
-
-filelogger = logging.getLogger('archive-success')
-filelogger.setLevel(logging.DEBUG)
-filelogger.propagate = False
-filerot = logging.handlers.RotatingFileHandler(path + 'archive-file-success.log', maxBytes=33554432)
-filerot.setLevel(logging.DEBUG)
-filerot.setFormatter(logging.Formatter('%(asctime)s, %(levelname)s, %(message)s'))
-filelogger.addHandler(filerot)
 
 
 class NGASHttpPushConnector(object):
@@ -362,9 +336,12 @@ class HTTPGetHandler(BaseHTTPRequestHandler):
          self.end_headers()
 
 
-class ArchiveDaemon(object):
+class Archiver(object):
    
    def __init__(self, dirs, watchdirs, handlers, concurrent=1, resend_wait=20):
+      self.filelogger = logging.getLogger('archive-success')
+      self.logger = logging.getLogger('archive')
+      
       self.q = Dequeue()
       self.resendq = Dequeue()
       self.pool = ActivePool()
@@ -384,8 +361,8 @@ class ArchiveDaemon(object):
          if type(dirs) is not list:
             raise Exception('dirs not a list')
       
-      logger.info('walking dirs: %s' % (dirs))
-      logger.info('watching dirs: %s' % (watchdirs))
+      self.logger.info('walking dirs: %s' % (dirs))
+      self.logger.info('watching dirs: %s' % (watchdirs))
       
       self.resend = threading.Thread(name='_resendLoop', target=self._resendLoop, args=())
       self.resend.setDaemon(True)
@@ -397,7 +374,7 @@ class ArchiveDaemon(object):
          
          def process_IN_CLOSE_WRITE(self, event):
             if event.dir is False:
-               logger.info('new file added to filesystem; file: %s' % (event.pathname))
+               self.ad.logger.info('new file added to filesystem; file: %s' % (event.pathname))
                self.ad.q.append(event.pathname)
       
       # walk all the specified directories and add all the files   
@@ -485,26 +462,26 @@ class ArchiveDaemon(object):
             if handler.hasTransfered(file) is False:
                handler.preTransferFile(file)
                
-               logger.info('transferring file; file: %s' % (file))
+               self.logger.info('transferring file; file: %s' % (file))
                
                handler.transferFile(file)
                
-               logger.info('transferFile success; file: %s' % (file))
+               self.logger.info('transferFile success; file: %s' % (file))
                
                try:
                   handler.postTransferFileSuccess(file)
-                  logger.info('postTransferFileSuccess success; file: %s' % (file))
-                  filelogger.info(file)
+                  self.logger.info('postTransferFileSuccess success; file: %s' % (file))
+                  self.filelogger.info(file)
                   
                except Exception as ex:
-                  logger.error('postTransferFileSuccess error; file: %s error: %s' % (file, str(ex)))
+                  self.logger.error('postTransferFileSuccess error; file: %s error: %s' % (file, str(ex)))
             else:
-               logger.info('file has already been transferred, ignoring; file: %s' % (file))
+               self.logger.info('file has already been transferred, ignoring; file: %s' % (file))
                
          except Exception as e:
             handler.postTransferFileError(file)
             
-            logger.error('transferFile error; putting on resend queue; file: %s error: %s' % (file, str(e)))
+            self.logger.error('transferFile error; putting on resend queue; file: %s error: %s' % (file, str(e)))
                
             # there was an error so put it on the resend queue
             self.resendq.append(file)
@@ -544,13 +521,15 @@ class ArchiveDaemon(object):
    def pause(self):
       with self.pausecond:
          self.pausebool = True
-      logger.info('pause called')
+         
+      self.logger.info('pause called')
    
    def resume(self):
       with self.pausecond:
          if self.pausebool is True:
             self.pausebool = False
-      logger.info('resume called')
+            
+      self.logger.info('resume called')
 	
 	
    def start(self):
@@ -570,7 +549,7 @@ class ArchiveDaemon(object):
 
       
    def stop(self):
-      logger.info('interrupted, shutting down...')
+      self.logger.info('interrupted, shutting down...')
       
       # close command server
       if self.cmdserver:
@@ -582,49 +561,3 @@ class ArchiveDaemon(object):
       
       # resume the queue if we are pause
       self.resume()
-      
-
-def main():
-   
-   logger.info('starting archiver...')
-   
-   # load up config file
-   config = SafeConfigParser()
-   config.readfp(open(APP_PATH + '/' + 'archive.cfg', "r"))
-   
-   dbhost = config.get("Database", "dbhost")
-   dbname = config.get("Database", "dbname")
-   dbuser = config.get("Database", "dbuser")
-   dbpass = base64.b64decode(config.get("Database", "dbpass"))
-   dbport = config.get("Database", "dbport")
-   
-   purl = config.get("Pawsey", "url")
-   pcmd = config.get("Pawsey", "cmd")
-   pmime = config.get("Pawsey", "mime")
-   puser = config.get("Pawsey", "user")
-   ppass = base64.b64decode(config.get("Pawsey", "pass"))
-                
-   db = MWADatabaseHandler(dbhost, dbname, dbuser, dbpass, dbport)
-   ngas = NGASHttpPushConnector(purl, pcmd, puser, ppass, pmime)
-   h1 = MWAVoltageDataVariantFileHandler(ngas, db)
-   h2 = MWAVoltageDataFileHandler(ngas, db)
-   
-   dirs = config.get("Archiver", "dirs").split(',')
-   watchdirs = config.get("Archiver", "watchdirs").split(',')
-   concurrent = config.getint("Archiver", "concurrent")
-
-   a = ArchiveDaemon(dirs, watchdirs, [h1, h2], concurrent=concurrent)
-   a.start()
-   
-   logger.info('stopped')
-
-if __name__ == "__main__":
-   try:
-      main()
-      sys.exit(0)
-   except Exception as e:
-      import traceback
-      traceback.print_exc()
-      logger.error(str(e))
-      sys.exit(1)
-      
