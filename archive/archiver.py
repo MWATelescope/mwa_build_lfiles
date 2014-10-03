@@ -165,7 +165,6 @@ class MWADatabaseHandler(object):
    
          if con:
            self.dbp.putconn(conn=con)
-      
 
    
 class MWAVoltageDataFileHandler(object):
@@ -515,6 +514,7 @@ class Archiver(object):
          if handler:
             self._transferFile(handler, file)
          else:
+            self.logger.info('file does not match any handler; file: %s' % (file,))
             continue
    
    
