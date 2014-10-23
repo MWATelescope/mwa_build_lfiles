@@ -27,13 +27,13 @@ void split(const std::string& s, char c, std::vector<std::string>& v) {
 		i = ++j;
 		j = s.find(c, j);
 		if (j == std::string::npos)
-			v.push_back(s.substr(i, s.length( )));
+			v.push_back(s.substr(i, s.length()));
 	}
 }
 
 
 void print_usage() {
-    printf("Usage: recombine -f <directory of input files> OR -g <file containing 32 input filenames> -o <obs id> -i <output directory> -d <course chan list> -c <skip course chan> -s <skip ICS> \n");
+    printf("Usage: recombine -f <file list> || -g <input file list> -o <obsid> -t <secondid> -i <output dir> -d <course channel freq list> -c <skip course chan> -s <skip ICS> \n");
 }
 
 
@@ -45,12 +45,13 @@ int main(int argc, char **argv) {
 	char *ivalue = NULL;
 	char *gvalue = NULL;
 	char *dvalue = NULL;
+	char *tvalue = NULL;
 	int index;
 	int c;
 
 	opterr = 0;
 
-	while ((c = getopt(argc, argv, "csg:f:o:i:d:")) != -1)
+	while ((c = getopt(argc, argv, "csg:f:o:i:d:t:")) != -1)
 		switch (c)
 		{
 			case 'c':
@@ -74,17 +75,22 @@ int main(int argc, char **argv) {
 			case 'i':
 				ivalue = optarg;
 				break;
+			case 't':
+				tvalue = optarg;
+				break;
 			case '?':
 				 if (optopt == 'f')
-					 fprintf (stderr, "Option -f requires a directory containing input files.\n");
+					 fprintf (stderr, "Option -f list of input filenames no more than 32 files e.g. \"file1.dat file2.dat\".\n");
 				 else if (optopt == 'g')
-					 fprintf (stderr, "Option -g requires a file with a list of input filenames.\n");
+					 fprintf (stderr, "Option -g file containing list of input filenames (one filename per line no more that 32 files).\n");
 				 else if (optopt == 'o')
-					 fprintf (stderr, "Option -o observation id of the set.\n");
+					 fprintf (stderr, "Option -o observation ID of the set.\n");
 				 else if (optopt == 'i')
 					 fprintf (stderr, "Option -i output directory containing 24 course channel files.\n");
 				 else if (optopt == 'd')
 					 fprintf (stderr, "Option -d course channel list (24 values comma separated).\n");
+				 else if (optopt == 't')
+					 fprintf (stderr, "Option -t must specify second ID.\n");
 				 else if (isprint (optopt))
 					 fprintf (stderr, "Unknown option.\n");
 				 else
@@ -97,20 +103,32 @@ int main(int argc, char **argv) {
 				exit(EXIT_FAILURE);
 		}
 
-	if (ovalue == NULL || ivalue == NULL) {
-		printf("Invalid command line\n");
+	if (ovalue == NULL) {
+		printf("Invalid command line, observation ID not specified\n");
+		print_usage();
+		exit(EXIT_FAILURE);
+	}
+
+	if (ivalue == NULL) {
+		printf("Invalid command line, output directory not specified\n");
+		print_usage();
+		exit(EXIT_FAILURE);
+	}
+
+	if (tvalue == NULL) {
+		printf("Invalid command line, second ID not specified\n");
 		print_usage();
 		exit(EXIT_FAILURE);
 	}
 
 	if (fvalue == NULL && gvalue == NULL) {
-		printf("Invalid command line, must specify directory or file containing input filenames\n");
+		printf("Invalid command line, list of input files or a file containing filenames not specified\n");
 		print_usage();
 		exit(EXIT_FAILURE);
 	}
 
 	if (fvalue != NULL && gvalue != NULL) {
-		printf("Invalid command line, can not specify both directory and file containing input filenames\n");
+		printf("Invalid command line, can not specify both list of input files or a file containing filenames\n");
 		print_usage();
 		exit(EXIT_FAILURE);
 	}
@@ -166,11 +184,33 @@ int main(int argc, char **argv) {
 	int ret = 0;
 
 	if (fvalue != NULL) {
-		ret = open_input_from_directory(fvalue, &input);
-		if (ret != 0) {
+		// each file must be separated by a white space
+		std::string fileinput = std::string(fvalue);
+		std::vector<std::string> fv;
+		split(fileinput, ' ', fv);
+
+		printf("%s\n", fvalue);
+		printf("%d\n", (int)fv.size());
+
+		for (int i = 0; i < fv.size(); i++) {
+			printf("%s\n", fv[i].c_str());
+		}
+
+		if (fv.size() != 32) {
+			printf("Invalid command line, must specify 32 input files.\n");
+			print_usage();
+			exit(EXIT_FAILURE);
+		}
+
+		for (int i = 0; i < fv.size(); i++) {
+			strcpy(input.m_handles[i].m_id, fv[i].c_str());
+		}
+
+		if (open_input_from_file(&input) != 0) {
 			printf("%s\n", strerror(errno));
 			return EXIT_FAILURE;
 		}
+
 	}
 	else if (gvalue != NULL) {
 		ret = open_input_from_file_list(gvalue, &input);
@@ -197,13 +237,13 @@ int main(int argc, char **argv) {
 	for (int i = 0; i < 24; ++i) {
 		std::stringstream s;
 		s << out.m_freq[i];
-		std::string full_out_path = out_path + "/" + std::string(ovalue) + "_ch" + s.str() + ".dat";
+		std::string full_out_path = out_path + "/" + std::string(ovalue) + "_" + std::string(tvalue) + "_ch" + s.str() + ".dat";
 		strcpy(output.m_handles[i].m_id, full_out_path.c_str());
 	}
 
 	if (!sflag) {
 		// open output for ics
-		std::string full_out_path_ics = out_path + "/" + std::string(ovalue) + "_ics.dat";
+		std::string full_out_path_ics = out_path + "/" + std::string(ovalue) + "_" + std::string(tvalue) + "_ics.dat";
 		if ((ics_handle.m_handle = open(full_out_path_ics.c_str(), O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU)) < 0)
 			return EXIT_FAILURE;
 	}

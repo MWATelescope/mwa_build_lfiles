@@ -39,12 +39,6 @@ static unsigned short byte_to_sum[256] = {
 #define ICS_BUFF 30720000
 #define COURSE_CHAN_BUFF 64000*256
 
-unsigned short twoCompNibbleSquared[16] = { 0, 1, 4, 9, 16, 25, 36, 49, 64, 49, 36, 25, 16, 9, 4, 1  };
-
-unsigned short absComplexNumber(char val) {
-	return twoCompNibbleSquared[((val & 0xF0) >> 4)] + twoCompNibbleSquared[(val & 0x0F)];
-}
-
 
 int read_from_input(course_chan_input_matrix* matrix, course_chan_input_array* input)
 {
