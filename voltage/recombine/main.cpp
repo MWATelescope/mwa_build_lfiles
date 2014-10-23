@@ -189,13 +189,6 @@ int main(int argc, char **argv) {
 		std::vector<std::string> fv;
 		split(fileinput, ' ', fv);
 
-		printf("%s\n", fvalue);
-		printf("%d\n", (int)fv.size());
-
-		for (int i = 0; i < fv.size(); i++) {
-			printf("%s\n", fv[i].c_str());
-		}
-
 		if (fv.size() != 32) {
 			printf("Invalid command line, must specify 32 input files.\n");
 			print_usage();
