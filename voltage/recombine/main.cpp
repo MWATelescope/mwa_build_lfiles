@@ -13,23 +13,9 @@
 #include <inttypes.h>
 #include <vector>
 #include <algorithm>
+#include <limits.h>
 
 #include "recombine.h"
-
-
-// split string up on a token boundary
-void split(const std::string& s, char c, std::vector<std::string>& v) {
-	std::string::size_type i = 0;
-	std::string::size_type j = s.find(c);
-
-	while (j != std::string::npos) {
-		v.push_back(s.substr(i, j-i));
-		i = ++j;
-		j = s.find(c, j);
-		if (j == std::string::npos)
-			v.push_back(s.substr(i, s.length()));
-	}
-}
 
 
 void print_usage() {
@@ -40,47 +26,89 @@ void print_usage() {
 int main(int argc, char **argv) {
 
 	volatile bool sflag, cflag = false;
-	char *fvalue = NULL;
 	char *ovalue = NULL;
 	char *ivalue = NULL;
 	char *gvalue = NULL;
-	char *dvalue = NULL;
 	char *tvalue = NULL;
 	int index;
 	int c;
 
 	opterr = 0;
 
-	while ((c = getopt(argc, argv, "csg:f:o:i:d:t:")) != -1)
+	std::vector<std::string> fv;
+	std::vector<int> cv;
+
+
+	while ((c = getopt(argc, argv, "csg:f:o:i:d:t:")) != -1) {
 		switch (c)
 		{
 			case 'c':
 				cflag = true;
 				break;
+
 			case 's':
 				sflag = true;
 				break;
+
 			case 'd':
-				dvalue = optarg;
+				{
+					optind--;
+					for(;optind < argc && *argv[optind] != '-'; optind++) {
+
+						char *endptr = NULL;
+
+						errno = 0;
+						int val = strtol(argv[optind], &endptr, 10);
+
+						// Check for various possible errors
+						if ((errno == ERANGE && (val == LONG_MAX || val == LONG_MIN)) || (errno != 0 && val == 0)) {
+							perror("strtol");
+							exit(EXIT_FAILURE);
+						}
+
+						if (val < 0) {
+							fprintf(stderr, "Course frequency channel can not be less than 0\n");
+							exit(EXIT_FAILURE);
+						}
+
+						if (endptr == argv[optind]) {
+							fprintf(stderr, "Invalid course frequency channel: %s\n", argv[optind]);
+							exit(EXIT_FAILURE);
+						}
+
+						cv.push_back(val);
+					}
+				}
 				break;
+
+
 			case 'g':
 				gvalue = optarg;
 				break;
+
 			case 'f':
-				fvalue = optarg;
+				{
+					optind--;
+					for(;optind < argc && *argv[optind] != '-'; optind++)
+						fv.push_back(argv[optind]);
+				}
 				break;
+
 			case 'o':
 				ovalue = optarg;
 				break;
+
 			case 'i':
 				ivalue = optarg;
 				break;
+
 			case 't':
 				tvalue = optarg;
 				break;
+
 			case '?':
 				 if (optopt == 'f')
-					 fprintf (stderr, "Option -f list of input filenames no more than 32 files e.g. \"file1.dat file2.dat\".\n");
+					 fprintf (stderr, "Option -f list of input filenames no more than 32 files.\n");
 				 else if (optopt == 'g')
 					 fprintf (stderr, "Option -g file containing list of input filenames (one filename per line no more that 32 files).\n");
 				 else if (optopt == 'o')
@@ -94,7 +122,7 @@ int main(int argc, char **argv) {
 				 else if (isprint (optopt))
 					 fprintf (stderr, "Unknown option.\n");
 				 else
-				   fprintf (stderr,"Unknown option character.\n");
+					 fprintf (stderr,"Unknown option character.\n");
 
 				 return EXIT_FAILURE;
 
@@ -102,6 +130,7 @@ int main(int argc, char **argv) {
 				print_usage();
 				exit(EXIT_FAILURE);
 		}
+	}
 
 	if (ovalue == NULL) {
 		printf("Invalid command line, observation ID not specified\n");
@@ -121,20 +150,20 @@ int main(int argc, char **argv) {
 		exit(EXIT_FAILURE);
 	}
 
-	if (fvalue == NULL && gvalue == NULL) {
+	if (fv.size() == 0 && gvalue == NULL) {
 		printf("Invalid command line, list of input files or a file containing filenames not specified\n");
 		print_usage();
 		exit(EXIT_FAILURE);
 	}
 
-	if (fvalue != NULL && gvalue != NULL) {
+	if (fv.size() != 0 && gvalue != NULL) {
 		printf("Invalid command line, can not specify both list of input files or a file containing filenames\n");
 		print_usage();
 		exit(EXIT_FAILURE);
 	}
 
-	if (dvalue == NULL) {
-		printf("Invalid command line, must specify course channel list\n");
+	if (cv.size() != 24) {
+		printf("Invalid command line, must specify exactly 24 course channel frequencies\n");
 		print_usage();
 		exit(EXIT_FAILURE);
 	}
@@ -142,25 +171,9 @@ int main(int argc, char **argv) {
 	course_chan_freq in, out;
 	unsigned int course_swap_index = 0;
 
-	std::string cmdinput = std::string(dvalue);
-	std::vector<std::string> v;
-	split(cmdinput, ',', v);
+	for (int i = 0; i < cv.size(); i++)
+		in.m_freq[i] = cv[i];
 
-	if (v.size() != 24) {
-		printf("Invalid command line, must specify 24 course channel frequencies\n");
-		print_usage();
-		exit(EXIT_FAILURE);
-	}
-
-	// convert strings to integers
-	unsigned int x;
-	for (int i = 0; i < v.size(); i++) {
-		std::stringstream str(v[i]);
-		str >> x;
-		in.m_freq[i] = x;
-	}
-
-	// check for duplicate frequency entries
 	for (int i = 0; i < 24; i++) {
 		for (int j = i + 1; j < 24; j++) {
 			if (in.m_freq[i] == in.m_freq[j]) {
@@ -183,21 +196,16 @@ int main(int argc, char **argv) {
 
 	int ret = 0;
 
-	if (fvalue != NULL) {
-		// each file must be separated by a white space
-		std::string fileinput = std::string(fvalue);
-		std::vector<std::string> fv;
-		split(fileinput, ' ', fv);
+	if (fv.size() != 0) {
 
-		if (fv.size() != 32) {
-			printf("Invalid command line, must specify 32 input files.\n");
+		if (fv.size() > 32) {
+			printf("Invalid command line, must specify no more than 32 input files.\n");
 			print_usage();
 			exit(EXIT_FAILURE);
 		}
 
-		for (int i = 0; i < fv.size(); i++) {
+		for (int i = 0; i < fv.size(); i++)
 			strcpy(input.m_handles[i].m_id, fv[i].c_str());
-		}
 
 		if (open_input_from_file(&input) != 0) {
 			printf("%s\n", strerror(errno));
@@ -219,7 +227,7 @@ int main(int argc, char **argv) {
 
 	for (int i = 0; i < 32; ++i)
 		if (input.m_handles[i].pad_input == true)
-			printf("Warning: stream %s either failed to open or does not exist, input will be padded with zeros!\n", input.m_handles[i].m_id);
+			printf("Warning: stream id: %d name: %s either failed to open or does not exist, input will be padded with zeros!\n", i, input.m_handles[i].m_id);
 
 	// ensure output directory exists; if not create it
 	struct stat st = {0};

@@ -81,7 +81,7 @@ int read_from_input(course_chan_input_matrix* matrix, course_chan_input_array* i
 			unsigned char freq_index = (w2>>4) & 0x7;
 			unsigned char rx_index = (w3>>14) & 0x3;
 
-			printf("%s %04x %04x %04x %d %d\n", input->m_handles[i].m_id, w1, w2, w3, rx_index, freq_index);
+			//printf("%s %04x %04x %04x %d %d\n", input->m_handles[i].m_id, w1, w2, w3, rx_index, freq_index);
 
 			// Ensure we are in range
 			assert(rx_index >= 0 && rx_index <= 3);
@@ -453,11 +453,11 @@ int open_input_from_directory(const char* directory, course_chan_input_array* in
 			if ((input->m_handles[count].m_handle = open(full.c_str(), O_RDONLY)) < 0) {
 				input->m_handles[count].pad_input = true; // input failed to open; pad stream with zeros
 			}
-			else {
+			/*else {
 				struct stat st;
 				assert(fstat(input->m_handles[count].m_handle, &st) != -1);
 				posix_fadvise(input->m_handles[count].m_handle, 0, st.st_size, POSIX_FADV_SEQUENTIAL|POSIX_FADV_WILLNEED);
-			}
+			}*/
 
 			count+=1;
 
@@ -512,11 +512,11 @@ int open_input_from_file(course_chan_input_array* input)
 		if ((input->m_handles[i].m_handle = open(input->m_handles[i].m_id, O_RDONLY)) < 0) {
 			input->m_handles[i].pad_input = true; // input failed to open; pad stream with zeros
 		}
-		else {
+		/*else {
 			struct stat st;
 			assert(fstat(input->m_handles[i].m_handle, &st) != -1);
 			posix_fadvise(input->m_handles[i].m_handle, 0, st.st_size, POSIX_FADV_SEQUENTIAL|POSIX_FADV_WILLNEED);
-		}
+		}*/
 
 	return 0;
 }
