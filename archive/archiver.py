@@ -251,7 +251,7 @@ class MWAVoltageDataVariantFileHandler(MWAVoltageDataFileHandler):
    
 
 
-class ActivePool(object):
+'''class ActivePool(object):
    def __init__(self):
       self.active = []
       self.lock = threading.Lock()
@@ -262,7 +262,7 @@ class ActivePool(object):
    
    def makeInactive(self, thd):
       with self.lock:
-         self.active.remove(thd)
+         self.active.remove(thd)'''
 
 
 class Dequeue(object):
@@ -277,7 +277,7 @@ class Dequeue(object):
    def popleft(self):
       with self.cv:
          while not bool(self.QUEUE):
-            self.cv.wait(0.01)
+            self.cv.wait(1)
             
          return self.QUEUE.popleft()
 
@@ -343,7 +343,7 @@ class Archiver(object):
       
       self.q = Dequeue()
       self.resendq = Dequeue()
-      self.pool = ActivePool()
+      #self.pool = ActivePool()
       self.handlers = handlers
       self.sem = threading.Semaphore(concurrent)
       self.resend_wait = resend_wait
@@ -452,9 +452,9 @@ class Archiver(object):
    
    def _worker(self, handler, file):
       
-      thd = threading.currentThread()
+      #thd = threading.currentThread()
       try:   
-         self.pool.makeActive(thd)
+         #self.pool.makeActive(thd)
          
          try:
             # if we have already transfered this file then just ignore
@@ -487,12 +487,11 @@ class Archiver(object):
          
       
       finally:
-         self.pool.makeInactive(thd)
+         #self.pool.makeInactive(thd)
          self.sem.release()
    
    
-   def _transferFile(self, handler, file):
-      self.sem.acquire()      
+   def _transferFile(self, handler, file):      
       t = threading.Thread(target=self._worker, args=(handler, file))
       t.start()
 
@@ -503,8 +502,10 @@ class Archiver(object):
          # pause the thread
          with self.pausecond:
             while self.pausebool is True:
-         	   self.pausecond.wait(0.01)
-               
+         	   self.pausecond.wait(1)
+         
+         self.sem.acquire()
+         
          file = self.q.popleft()
 
          if file is None:
@@ -514,6 +515,7 @@ class Archiver(object):
          if handler:
             self._transferFile(handler, file)
          else:
+            self.sem.release()
             self.logger.info('file does not match any handler; file: %s' % (file,))
             continue
    
@@ -528,6 +530,7 @@ class Archiver(object):
       with self.pausecond:
          if self.pausebool is True:
             self.pausebool = False
+            self.pausecond.notify()
             
       self.logger.info('resume called')
 	
