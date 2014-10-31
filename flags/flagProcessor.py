@@ -598,7 +598,7 @@ class FlagProcessor(object):
          
          
       except Exception as e:
-         logger.error("_processFlags: %s" % (str(e)))
+         logger.error("_processFlags: %s, ObsID: %s" % (str(e), str(obsid)))
          import traceback
          traceback.print_exc()
 
