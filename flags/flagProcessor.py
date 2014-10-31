@@ -5,7 +5,9 @@ from ConfigParser import SafeConfigParser
 from threading import Condition, Thread
 import psycopg2, psycopg2.pool
 from collections import deque
-
+from BaseHTTPServer import HTTPServer
+from BaseHTTPServer import BaseHTTPRequestHandler
+import urlparse, json
 
 APP_PATH = os.path.dirname(os.path.realpath(__file__))
 path = APP_PATH + '/log/'
@@ -26,7 +28,7 @@ class Dequeue(object):
    
    def __init__(self):
       self.QUEUE = deque()
-      self.cv = Condition(threading.RLock())
+      self.cv = Condition(threading.Lock())
    
    def popleftnowait(self):
       return self.QUEUE.popleft()
@@ -48,9 +50,19 @@ class Dequeue(object):
          self.QUEUE.appendleft(item)
          self.cv.notify()
    
+   def remove(self, item):
+      with self.cv:
+         self.QUEUE.remove(item)
+   
    def __len__(self):
       return len(self.QUEUE)
 
+
+class DummyHandler(object):
+   
+   def processFlags(self, obsid, numfiles):
+      logger.info('Processing flags: %s' % (str(obsid)))
+      time.sleep(0.05)
 
 
 class FornaxFlagHandler(object):
@@ -58,6 +70,9 @@ class FornaxFlagHandler(object):
    def __init__(self):
       self.fp = None
 
+      config = SafeConfigParser()
+      config.readfp(open(APP_PATH + '/' + 'flagger.cfg', "r"))
+      
       self.OBS_DOWNLOAD = '/scratch/mwaops/flags/scripts/obsdownload.py'
       self.COTTER = '/group/mwaops/CODE/bin/cotter'
       self.SCRATCH = '/scratch/mwaops/flags/tmp'
@@ -71,7 +86,7 @@ class FornaxFlagHandler(object):
       
       self.ZIP = 'ssh -t fornax \'/usr/bin/zip -r %(ZIPFILE)s %(FLAGS)s\''
       
-      self.ARCHIVECLIENT = 'ssh -t fornax \'/scratch/mwaops/ngas/ngamsCClient -host fe1.pawsey.ivec.org -port 7777 -auth bmdhc21ncjpuZ2FzJGRiYQ== -cmd QARCHIVE -mimeType application/octet-stream -fileUri %(FILE)s\''
+      self.ARCHIVECLIENT = 'ssh -t fornax \'/scratch/mwaops/ngas/ngamsCClient -host fe1.pawsey.ivec.org -port 7777 -auth ' + config.get("Pawsey", "archiveauth") + ' -cmd QARCHIVE -mimeType application/octet-stream -fileUri %(FILE)s\''
 
 
    def tarUpFlagFiles(self, direc, obsid):
@@ -260,6 +275,62 @@ class FornaxFlagHandler(object):
       logger.info('Processing flags success: %s' % (str(obsid)))
 
 
+
+class MyHTTPServer(HTTPServer):
+   def __init__(self, *args, **kw):
+      HTTPServer.__init__(self, *args, **kw)
+      self.context = None
+
+
+class HTTPGetHandler(BaseHTTPRequestHandler):
+
+   def do_GET(self):
+      
+      parsed_path = urlparse.urlparse(self.path)
+      
+      try:
+         if parsed_path.path.lower() == '/status'.lower():
+            
+            statustext = 'running'
+            if self.server.context.pausebool:
+                statustext = 'paused'
+            
+            processing = []
+            with self.server.context.plock:
+               processing = list(self.server.context.processing)
+             
+            processingstr = ''
+            for i in processing:
+               processingstr += str(i) + ' '
+               
+            data = { 'status':statustext, 'queue':len(self.server.context.q), 'processing': processingstr }
+            
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps(data))
+         
+         elif parsed_path.path.lower() == '/pause'.lower():
+            self.server.context.pause()
+            self.send_response(200)
+            self.end_headers()
+           
+         elif parsed_path.path.lower() == '/resume'.lower():
+            self.server.context.resume()
+            self.send_response(200)
+            self.end_headers()
+         
+         elif parsed_path.path.lower() == '/kill'.lower():
+            self.server.context.stop()
+            self.send_response(200)
+            self.end_headers()
+             
+      except Exception as e:
+         print e
+         self.send_response(400)
+         self.end_headers()
+
+
+
 class FlagProcessor(object):
    
    def __init__(self, handler, concurrent=4, resend_wait=300):
@@ -269,6 +340,14 @@ class FlagProcessor(object):
       self.resend_wait = resend_wait
       self.handler = handler
       self.handler.fp = self
+      
+      # keep track of what we are processing at the moment
+      self.processing = []
+      self.plock = Condition(threading.Lock())
+      self.pcount= 0
+      
+      self.pausecond = Condition(threading.Lock())
+      self.pausebool = False
       
       config = SafeConfigParser()
       config.readfp(open(APP_PATH + '/' + 'flagger.cfg', "r"))
@@ -309,14 +388,123 @@ class FlagProcessor(object):
 
          for r in rowset:
             self.q.append(r)
+
+
+      self.processRecent = threading.Thread(name='_processRecent', target=self._processRecent, args=())
+      self.processRecent.setDaemon(True)
+      self.processRecent.start()
+      
+
+      self.cmdserver = MyHTTPServer(('', 7900), HTTPGetHandler)
+      self.cmdserver.context = self
+
+      self.cmdthread = threading.Thread(name='_commandLoop', target=self._commandLoop, args=(self.cmdserver,))
+      self.cmdthread.setDaemon(True)
+      self.cmdthread.start()
+      
       
       signal.signal(signal.SIGINT, self._signalINT)
       signal.signal(signal.SIGTERM, self._signalINT)
+
+   
+   def _processRecent(self):
+      
+      while True:
+         
+         time.sleep(86400)
+         
+         with self.plock:
+            if self.pcount > 0:
+               logger.info('Still processing recent list, continuing.')
+               continue
+
+         try:
+            obs = self._getRecentObsProcessingList()
+            
+            logger.info('Recent observation list: %s' % (str(len(obs))))
+            
+            with self.plock:
+               
+               for o in obs:
+                  obsid = o[0]
+                  
+                  # if we are already processing this observation then ignore it
+                  if obsid in self.processing:
+                     self.pcount += 1
+                     continue
+                  
+                  # remove from queue;
+                  try:
+                     self.q.remove(o)
+                  except:
+                     pass
+                  
+                  self.q.appendleft(o)
+                  self.pcount += 1
+            
+         except Exception as e:
+            logger.error('_processRecent: %s' % (str(e)))
+            
+
+
+   def _commandLoop(self, cmdserver):
+      try:
+         # start server
+         cmdserver.serve_forever()
+      except Exception as e:
+         pass
 
 
    def _signalINT(self, signal, frame):
       self.stop()
       
+   
+   def _getRecentObsProcessingList(self):
+      cursor = None
+      con = None
+
+      try:
+         con = self.dbp.getconn()
+
+         cursor = con.cursor()
+
+         cursor.execute("select distinct starttime, count(d.observation_num), a.projectid from mwa_setting a \
+         inner join mwa_project p on a.projectid = p.projectid \
+         inner join data_files d on a.starttime = d.observation_num \
+         where not exists (select 1 from data_files where filetype = 10 and a.starttime = data_files.observation_num) \
+         and (select bool_and(remote_archived) from data_files where a.starttime = data_files.observation_num) \
+         and starttime > 1061740896 and starttime < gpsnow()-900 \
+         and a.mode = 'HW_LFILES' \
+         and p.projectid not in ('C100', 'C001', 'D0004', 'G0002', 'C105', 'C106', 'D0000', 'D0003', 'D0005') \
+         and dataquality <> 3 and dataquality <> 4 and dataquality <> 5 group by a.starttime order by starttime desc;")
+
+         proj = ''
+         first = True
+         obs = []
+
+         rows = cursor.fetchall()
+         if rows:
+            for r in rows:
+               if first:
+                  proj = r[2]
+                  first = False
+               elif proj != r[2]:
+                  break
+               
+               obs.insert(0, (r[0], r[1]))
+
+         return obs
+
+      except Exception as e:
+         raise e
+
+      finally:
+         if cursor:
+            cursor.close()
+            
+         if con:
+            self.dbp.putconn(conn=con)  
+
 
    def _getObsProcessingList(self):
       
@@ -415,25 +603,61 @@ class FlagProcessor(object):
          traceback.print_exc()
 
       finally:
+         with self.plock:
+            if obsid in self.processing:
+               self.processing.remove(obsid)
+            
+            if self.pcount > 0:
+               self.pcount -= 1
+            
          self.sem.release()
       
       
    def stop(self):
+      #if self.cmdserver:
+      #   self.cmdserver.server_close()
+      #   self.cmdthread.join()
+      
       self.q.appendleft((None, None))
+
+      self.resume()
+      
+
+   def pause(self):
+      with self.pausecond:
+         self.pausebool = True
+         
+      logger.info('pause called')
+
+   
+   def resume(self):
+      with self.pausecond:
+         if self.pausebool is True:
+            self.pausebool = False
+            self.pausecond.notify()
+            
+      logger.info('resume called')
 
 
    def start(self):
       
       while True:
        
+         with self.pausecond:
+            while self.pausebool is True:
+               self.pausecond.wait(1)
+       
          self.sem.acquire()
-                
-         obsid, numfiles = self.q.popleft()
          
-         logger.info('Queue size: %s' % (str(len(self.q))))
+         with self.plock:
+            obsid, numfiles = self.q.popleft()
+            if obsid is not None:
+               self.processing.append(obsid)
+         
+            logger.info('Queue size: %s Recent Queue Size: %s' % (str(len(self.q)), str(self.pcount)))
          
          if obsid is None:
-            logger.info('interrupted, shutting down flagger...')
+            logger.info('Interrupted, shutting down flagger...')
             self.sem.release()
             sys.exit(2)
          
@@ -444,13 +668,13 @@ class FlagProcessor(object):
 
 def main():
    
-   logger.info('starting flagger...')
+   logger.info('Starting flagger...')
 
-   fh = FornaxFlagHandler()
+   fh = DummyHandler()
    fp = FlagProcessor(fh)
    fp.start()
    
-   logger.info('stopped flagger')
+   logger.info('Stopped flagger')
 
 if __name__ == "__main__":
    try:
