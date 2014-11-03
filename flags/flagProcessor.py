@@ -525,7 +525,7 @@ class FlagProcessor(object):
          and starttime > 1061740896 and starttime < gpsnow()-900 \
          and a.mode = 'HW_LFILES' \
          and p.projectid not in ('C100', 'C001', 'D0004', 'G0002', 'C105', 'C106', 'D0000', 'D0003', 'D0005') \
-         and dataquality <> 3 and dataquality <> 4 and dataquality <> 5 group by a.starttime order by starttime asc;")
+         and dataquality <> 3 and dataquality <> 4 and dataquality <> 5 group by a.starttime order by starttime desc;")
          
          #1056672016
          
@@ -670,7 +670,7 @@ def main():
    
    logger.info('Starting flagger...')
 
-   fh = DummyHandler()
+   fh = FornaxFlagHandler()
    fp = FlagProcessor(fh)
    fp.start()
    
