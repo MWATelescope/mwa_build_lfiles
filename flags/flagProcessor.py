@@ -84,16 +84,16 @@ class FornaxFlagHandler(object):
    
       self.COTTERQ = 'ssh -t fornax \'qsub -I -V -q workq -N cotter -l walltime=00:59:00 -l select=1:ncpus=12:mem=64gb  -W group_list=mwaops  -- %(COTTER)s -allowmissing -absmem 64 %(IFLAG)s -m %(SCRATCH)s/%(OBSID)s/%(OBSID)s.metafits -o %(SCRATCH)s/%(OBSID)s/%(OBSID)s_%%%%.mwaf %(SCRATCH)s/%(OBSID)s/*.fits\''
       
-      self.ZIP = 'ssh -t fornax \'/usr/bin/zip -r %(ZIPFILE)s %(FLAGS)s\''
+      self.ZIP = 'ssh -t fornax \'cd %(FLAGDIR)s;/usr/bin/zip -r %(ZIPFILE)s %(FLAGS)s\''
       
-      self.ARCHIVECLIENT = 'ssh -t fornax \'/scratch/mwaops/ngas/ngamsCClient -host fe1.pawsey.ivec.org -port 7777 -auth ' + config.get("Pawsey", "archiveauth") + ' -cmd QARCHIVE -mimeType application/octet-stream -fileUri %(FILE)s\''
+      self.ARCHIVECLIENT = 'ssh -t fornax \'qsub -I -q copyq -N archiveFlags -l walltime=00:59:00 -l select=1:ncpus=1:mem=1gb  -W group_list=mwaops  -- /scratch/mwaops/ngas/ngamsCClient -host fe2.pawsey.ivec.org -port 7777 -auth ' + config.get("Pawsey", "archiveauth") + ' -cmd QARCHIVE -mimeType application/octet-stream -fileUri %(FILE)s\''
 
 
    def tarUpFlagFiles(self, direc, obsid):
     
       name =  str(obsid) + '_flags.zip'
 
-      cmd = self.ZIP % { 'ZIPFILE' : direc + name, 'FLAGS' : direc + '*.mwaf' }
+      cmd = self.ZIP % { 'FLAGDIR': direc, 'ZIPFILE' : direc + name, 'FLAGS' : '*.mwaf' }
 
       proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True, close_fds=True)
 
@@ -245,7 +245,7 @@ class FornaxFlagHandler(object):
       fullpath, filename, size = self.tarUpFlagFiles(self.SCRATCH + '/' + str(obsid) + '/', obsid)
 
       if size < 9000:
-         raise Exception('Tar file is too small, there has been an a problem: %s; filename: %s; size: %s' (str(obsid), str(filename), str(size)))
+         raise Exception('Tar file is too small, there has been an a problem: %s; filename: %s; size: %s' % (str(obsid), str(filename), str(size)))
 
       logger.info('Taring success: %s; filename: %s; size: %s' % (str(obsid), str(filename), str(size)))
 
@@ -598,7 +598,7 @@ class FlagProcessor(object):
          
          
       except Exception as e:
-         logger.error("_processFlags: %s, ObsID: %s" % (str(e), str(obsid)))
+         logger.error("_processFlags: ObsID: %s Error: %s " % (str(obsid), str(e)))
          import traceback
          traceback.print_exc()
 
