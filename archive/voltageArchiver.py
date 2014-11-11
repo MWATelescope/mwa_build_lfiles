@@ -49,14 +49,13 @@ def main():
                 
    db = MWADatabaseHandler(dbhost, dbname, dbuser, dbpass, dbport)
    ngas = NGASHttpPushConnector(purl, pcmd, puser, ppass, pmime)
-   h1 = MWAVoltageDataVariantFileHandler(ngas, db)
-   h2 = MWAVoltageDataFileHandler(ngas, db)
+   h1 = MWAVoltageDataFileHandler(ngas, db)
    
    dirs = config.get("Archiver", "dirs").split(',')
    watchdirs = config.get("Archiver", "watchdirs").split(',')
    concurrent = config.getint("Archiver", "concurrent")
 
-   a = Archiver(dirs, watchdirs, [h1, h2], concurrent=concurrent)
+   a = Archiver(dirs, watchdirs, [h1], concurrent=concurrent)
    a.start()
    
    logger.info('stopped')
