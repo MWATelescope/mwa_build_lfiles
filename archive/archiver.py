@@ -225,46 +225,6 @@ class MWAVoltageDataFileHandler(object):
          return False
 
 
-
-class MWAVoltageDataVariantFileHandler(MWAVoltageDataFileHandler):
-   
-   def splitFile(self, filename):
-      
-      try:
-         file = os.path.basename(filename)
-         if '.dat' not in file:
-            raise Exception('dat extension not found')
-      
-         part = file.split('_')
-         if 'ch' not in part[2]:
-            raise Exception('ch not found in 3rd part')
-         
-         obsid = int(part[0])
-         chan = part[2]
-         tm = int(part[3].split('.')[0])
-         lane = 0
-         
-         return obsid, tm, chan, lane
-               
-      except Exception as e:
-         raise Exception('invalid voltage data variant filename %s' % file)
-   
-
-
-'''class ActivePool(object):
-   def __init__(self):
-      self.active = []
-      self.lock = threading.Lock()
-   
-   def makeActive(self, thd):
-      with self.lock:
-         self.active.append(thd)
-   
-   def makeInactive(self, thd):
-      with self.lock:
-         self.active.remove(thd)'''
-
-
 class Dequeue(object):
    
    def __init__(self):
@@ -337,7 +297,7 @@ class HTTPGetHandler(BaseHTTPRequestHandler):
 
 class Archiver(object):
    
-   def __init__(self, dirs, watchdirs, handlers, concurrent=1, resend_wait=20):
+   def __init__(self, dirs, watchdirs, handlers, concurrent=1, resend_wait=300):
       self.filelogger = logging.getLogger('archive-success')
       self.logger = logging.getLogger('archive')
       
