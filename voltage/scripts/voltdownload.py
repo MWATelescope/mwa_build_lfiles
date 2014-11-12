@@ -218,8 +218,8 @@ def main():
         parser = OptionParser(usage="usage: %prog [options]", version="%prog 1.0")
         parser.add_option("--obs", action="store", dest="obs", help="Observation ID")
         parser.add_option("--type", action='store', type = 'int', dest='filetype', help='Voltage data type (Raw = 11, Recombined Raw = 12)')
-        parser.add_option("--from", action='store', type = 'int', dest='timefrom', help='Time from')
-        parser.add_option("--duration", default=0, action='store', type = 'int', dest='duration', help='Duration')
+        parser.add_option("--from", action='store', type = 'int', dest='timefrom', help='Time from (taken from filename)')
+        parser.add_option("--duration", default=0, type = 'int', dest='duration', help='Duration')
         parser.add_option("--ngas",  default='fe4.pawsey.ivec.org:7790', action="store", dest="ngashost", help="NGAS server (default: fe4.pawsey.ivec.org:7790)")
         parser.add_option("--dir", default= './', action="store", dest="out", help="Output directory (default: ./<Observation ID>")
         parser.add_option("--parallel", default='6', action="store", dest="td", help="Number of simultaneous downloads (default: 6)")
@@ -248,8 +248,8 @@ def main():
             sys.exit(-1)
         
         if options.timefrom != None and options.duration != None:
-            if options.duration <= 0:
-               print 'Duration must be greater than 0'
+            if options.duration < 0:
+               print 'Duration must not be negative'
                sys.exit(-1)
             
         numdownload = int(options.td)
