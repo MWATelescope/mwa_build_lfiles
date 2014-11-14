@@ -1,5 +1,5 @@
 import sys, base64, os, socket, signal
-import urllib2, urllib, httplib, time
+import urllib2, urllib, httplib, time, copy
 import threading
 import logging
 import psycopg2, psycopg2.pool
@@ -186,7 +186,9 @@ class MWACorrelatorFitsDataFileHandler(object):
    def __init__(self, connector, db):
       self.conn = connector
       self.db = db
-   
+      
+      self.obsMap = {}
+      self.obsMapLock = threading.RLock()
    
    def splitFile(self, filename):
       
@@ -205,6 +207,35 @@ class MWACorrelatorFitsDataFileHandler(object):
       except Exception as e:
          raise Exception('invalid correlator data filename %s' % file)
    
+   
+   def getFileStatus(self):
+      # return number of files and type so we can tell the user whats left
+      with self.obsMapLock:
+         return 8, copy.deepcopy(self.obsMap)
+   
+   def fileAdded(self, path):
+      try:
+         obs, time, chan = self.splitFile(path)
+         with self.obsMapLock:
+            value = self.obsMap.get(obs)
+            if value:
+               value += 1
+               self.obsMap[obs] = value
+            else:
+               self.obsMap[obs] = 1
+      except:
+         pass
+   
+   def fileComplete(self, path):
+      try:
+         obs, time, vcs, part = self.splitFile(path)
+         with self.obsMapLock:
+            value = self.obsMap.get(obs)
+            if value:
+               value = value - 1
+               self.obsMap[obs] = value
+      except:
+         pass
    
    def hasTransfered(self, filename):    
       return self.db.hasTransfered(self, filename)
@@ -312,6 +343,9 @@ class MWAVoltageDataFileHandler(object):
    def __init__(self, connector, db):
       self.conn = connector
       self.db = db
+      
+      self.obsMap = {}
+      self.obsMapLock = threading.RLock()
    
    
    def splitFile(self, filename):
@@ -329,7 +363,35 @@ class MWAVoltageDataFileHandler(object):
                
       except Exception as e:
          raise Exception('invalid voltage data filename %s' % file)
+      
+   def getFileStatus(self):
+      # return number of files and type so we can tell the user whats left
+      with self.obsMapLock:
+         return 11, copy.deepcopy(self.obsMap)
    
+   def fileAdded(self, path):
+      try:
+         obs, time, vcs, part = self.splitFile(path)
+         with self.obsMapLock:
+            value = self.obsMap.get(obs)
+            if value:
+               value += 1
+               self.obsMap[obs] = value
+            else:
+               self.obsMap[obs] = 1
+      except:
+         pass
+   
+   def fileComplete(self, path):
+      try:
+         obs, time, vcs, part = self.splitFile(path)
+         with self.obsMapLock:
+            value = self.obsMap.get(obs)
+            if value:
+               value = value - 1
+               self.obsMap[obs] = value
+      except:
+         pass
    
    def hasTransfered(self, filename):
       return self.db.hasTransfered(self, filename)
@@ -387,15 +449,19 @@ class Dequeue(object):
          self.cv.notify()
    
    def appendUnique(self, item):
+      unique = False
+      
       with self.cv:
          try:
             #Removed the first occurrence of value. If not found, raises a ValueError.
             self.QUEUE.remove(item)
          except:
-            pass
+            unique = True
          
          self.QUEUE.append(item)
          self.cv.notify()
+         
+         return unique
    
    def appendleft(self, item):
       with self.cv:
@@ -425,7 +491,14 @@ class HTTPGetHandler(BaseHTTPRequestHandler):
             if self.server.context.pausebool:
                 statustext = 'paused'
             
-            data = { 'status':statustext, 'queue':len(self.server.context.q) }
+            typeFileMap = {}
+            for h in self.server.context.handlers:
+               type, map = h.getFileStatus()
+               typeFileMap[type] = map
+            
+            transmitList = self.server.context.getTransmitList()
+            
+            data = { 'status':statustext, 'queue':len(self.server.context.q), 'resend_queue':len(self.server.context.resendq), 'transmit': len(transmitList), 'files':typeFileMap }
             
             self.send_response(200)
             self.end_headers()
@@ -463,6 +536,9 @@ class Archiver(object):
       self.sem = threading.Semaphore(concurrent)
       self.resend_wait = resend_wait
       
+      self.transmitLock = threading.RLock()
+      self.transmit = []
+      
       # pause 
       self.pausecond = Condition(threading.RLock())
       self.pausebool = False
@@ -491,9 +567,11 @@ class Archiver(object):
          
          def process_IN_CLOSE_WRITE(self, event):
             if event.dir is False:
-               if self._findHandler(event.pathname):
+               handler = self._findHandler(event.pathname)
+               if handler:
                   self.ad.logger.info('new file added to filesystem; file: %s' % (event.pathname))
-                  self.ad.q.appendUnique(event.pathname)
+                  if self.ad.q.appendUnique(event.pathname):
+                     handler.fileAdded(event.pathname)
       
       # walk all the specified directories and add all the files   
       for d in dirs:
@@ -514,7 +592,10 @@ class Archiver(object):
 
       signal.signal(signal.SIGINT, self._signalINT)
       signal.signal(signal.SIGTERM, self._signalINT)
-      
+   
+   def getTransmitList(self):
+      with self.transmitLock:
+         return copy.deepcopy(self.transmit)
      
    def _commandLoop(self, cmdserver):
       try:
@@ -554,7 +635,6 @@ class Archiver(object):
    def _signalINT(self, signal, frame):
       self.stop()
    
-   
    def _walkPath(self, dir):
       added = 0
       
@@ -562,8 +642,10 @@ class Archiver(object):
          for f in sorted(files):
             path = folder + '/' + f
             # only add files for which there is a handler
-            if self._findHandler(path):
-               self.q.appendUnique(path)
+            handler = self._findHandler(path)
+            if handler:   
+               if self.q.appendUnique(path):
+                  handler.fileAdded(path)
                added += 1
                
       return added
@@ -579,14 +661,17 @@ class Archiver(object):
    
    def _worker(self, handler, file):
       
-      try:   
+      try:
+         with self.transmitLock:
+            self.transmit.append(os.path.basename(file))
+          
          try:
             # if we have already transfered this file then just ignore
             if handler.hasTransfered(file) is False:
                handler.preTransferFile(file)
                
                self.logger.info('transferring file; file: %s' % (file))
-               
+            
                handler.transferFile(file)
                
                self.logger.info('transferFile success; file: %s' % (file))
@@ -596,10 +681,14 @@ class Archiver(object):
                   self.logger.info('postTransferFileSuccess success; file: %s' % (file))
                   self.filelogger.info(file)
                   
+                  handler.fileComplete(file)
+                  
                except Exception as ex:
                   self.logger.error('postTransferFileSuccess error; file: %s error: %s' % (file, str(ex)))
             else:
                self.logger.info('file has already been transferred, ignoring; file: %s' % (file))
+               
+               handler.fileComplete(file)
                
          except Exception as e:
             handler.postTransferFileError(file)
@@ -611,6 +700,12 @@ class Archiver(object):
          
       
       finally:
+         try:
+            with self.transmitLock:
+               self.transmit.remove(os.path.basename(file))
+         except:
+            pass
+         
          self.sem.release()
    
    
@@ -635,13 +730,13 @@ class Archiver(object):
             break;
          
          handler = self._findHandler(file)
-         if handler:
+         if handler:   
             self._transferFile(handler, file)
          else:
             self.sem.release()
             self.logger.info('file does not match any handler; file: %s' % (file,))
             continue
-   
+
    
    def pause(self):
       with self.pausecond:
