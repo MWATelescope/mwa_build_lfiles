@@ -103,7 +103,46 @@ class NGASHttpPushConnector(object):
             conn.close()
 
 
-class MWADatabaseHandler(object):
+class NGASMoveConnector(object):
+   
+   def __init__(self, url, mimetype, username, password):
+      self.url = url
+      self.mimetype = mimetype
+      self.username = username
+      self.password = password
+
+
+   def transferFile(self, fullpath):
+
+      logger.info('Moving file now %s' % (fullpath,))
+      
+      try:
+         base64string = base64.encodestring('%s:%s' % (self.username, self.password)).replace('\n', '')
+         headers = {"Authorization": "Basic %s" % base64string}
+      
+         req = 'LARCHIVE?fileUri=%s&mimeType=%s' % (fullpath, self.mimetype)
+         conn = httplib.HTTPConnection(self.url)
+         conn.request('GET', req, None, headers)
+      
+         # read the response
+         resp = conn.getresponse()
+         data = ''
+         while True:
+            buff = resp.read()
+            if buff:
+               data += buff
+            else:
+               break
+      
+         print resp.status, resp.reason, data
+      
+      finally:
+         if conn:
+            conn.close()
+
+
+
+class NGASDatabaseHandler(object):
    
    def __init__(self, dbhost, dbuser, dbname, dbpass, dbport):
    
@@ -115,7 +154,9 @@ class MWADatabaseHandler(object):
                                                 password=dbpass, \
                                                 port=dbport)
    
-   def hasVoltageFileTransfered(self, file):
+   def hasTransfered(self, handler, filename):
+      
+      basefile = os.path.basename(filename)
       
       cursor = None
       con = None
@@ -125,7 +166,7 @@ class MWADatabaseHandler(object):
          
          cursor = con.cursor()
          # check if observation exists; if not then except; else add the entry
-         cursor.execute("select exists(select 1 from data_files where filename = %s)", [file])
+         cursor.execute("select exists(select 1 from ngas_files where file_id = %s)", [basefile])
          row = cursor.fetchone()
          return row[0]
          
@@ -140,7 +181,106 @@ class MWADatabaseHandler(object):
             self.dbp.putconn(conn=con)
 
 
-   def insertVoltageFile(self, obsid, filename, size, host):
+class MWACorrelatorFitsDataFileHandler(object):
+   
+   def __init__(self, connector, db):
+      self.conn = connector
+      self.db = db
+   
+   
+   def splitFile(self, filename):
+      
+      try:
+         #1096202392_20141001123939_gpubox13_00.fits
+         file = os.path.basename(filename)
+         if '.fits' not in file:
+            raise Exception('fits extension not found')
+      
+         part = file.split('_')
+         if 'gpubox' not in part[2]:
+            raise Exception('gpubox not found in 3rd part')
+         
+         return (int(part[0]), int(part[1]), part[2])
+               
+      except Exception as e:
+         raise Exception('invalid correlator data filename %s' % file)
+   
+   
+   def hasTransfered(self, filename):    
+      return self.db.hasTransfered(self, filename)
+
+   
+   def transferFile(self, filename):
+      code, resp, data = self.conn.transferFile(filename)
+      if code != 200:
+         raise Exception(data)
+   
+   
+   def preTransferFile(self, filename):
+      pass
+   
+   
+   def postTransferFileSuccess(self, filename):
+      pass 
+
+      
+   def postTransferFileError(self, filename):
+      pass
+   
+   
+   def matchFile(self, filename):
+      try:
+         self.splitFile(filename)
+         return True
+      except:
+         return False
+      
+
+class MWADatabaseHandler(object):
+   
+   def __init__(self, dbhost, dbuser, dbname, dbpass, dbport):
+   
+      self.dbp = psycopg2.pool.ThreadedConnectionPool(minconn=2, \
+                                                maxconn=12, \
+                                                host=dbhost, \
+                                                user=dbuser, \
+                                                database=dbname, \
+                                                password=dbpass, \
+                                                port=dbport)
+   
+   def hasTransfered(self, handler, filename):
+      
+      basefile = os.path.basename(filename)
+      
+      cursor = None
+      con = None
+
+      try:
+         con = self.dbp.getconn()
+         
+         cursor = con.cursor()
+         # check if observation exists; if not then except; else add the entry
+         cursor.execute("select exists(select 1 from data_files where filename = %s)", [basefile])
+         row = cursor.fetchone()
+         return row[0]
+         
+      except Exception as e:
+         raise e
+
+      finally:
+         if cursor:
+            cursor.close()
+            
+         if con:
+            self.dbp.putconn(conn=con)
+
+
+   def postTransferFileSuccess(self, handler, filename):
+      
+      obsid, time, vcs, lane = handler.splitFile(filename)
+      size = os.stat(filename).st_size
+      basefile = os.path.basename(filename)
+      
       con = None
       cursor = None
        
@@ -150,7 +290,7 @@ class MWADatabaseHandler(object):
    
          cursor = con.cursor()
          cursor.execute("INSERT INTO data_files (observation_num, filetype, size, filename, site_path, host, remote_archived) VALUES (%s, %s, %s, %s, %s, %s, True)",
-                        [str(obsid), str(11), str(size), filename, 'http://mwangas/RETRIEVE?file_id=' + filename, host])
+                        [str(obsid), str(11), str(size), basefile, 'http://mwangas/RETRIEVE?file_id=' + basefile, vcs])
 
       except Exception, e:
          if con:
@@ -191,8 +331,8 @@ class MWAVoltageDataFileHandler(object):
          raise Exception('invalid voltage data filename %s' % file)
    
    
-   def hasTransfered(self, filename):    
-      return self.db.hasVoltageFileTransfered(os.path.basename(filename))
+   def hasTransfered(self, filename):
+      return self.db.hasTransfered(self, filename)
 
    
    def transferFile(self, filename):
@@ -206,10 +346,10 @@ class MWAVoltageDataFileHandler(object):
    
    
    def postTransferFileSuccess(self, filename):
-      
-      obsid, time, vcs, lane = self.splitFile(filename)
+      self.db.postTransferFileSuccess(self, filename)
+      #obsid, time, vcs, lane = self.splitFile(filename)
       # insert the successfully transfered file into the data_files table in the M&C database
-      self.db.insertVoltageFile(obsid, os.path.basename(filename), os.stat(filename).st_size, vcs)
+      #self.db.insertVoltageFile(obsid, os.path.basename(filename), os.stat(filename).st_size, vcs)
       
       #do we want to delete the file?
       
@@ -245,7 +385,18 @@ class Dequeue(object):
       with self.cv:
          self.QUEUE.append(item)
          self.cv.notify()
-      
+   
+   def appendUnique(self, item):
+      with self.cv:
+         try:
+            #Removed the first occurrence of value. If not found, raises a ValueError.
+            self.QUEUE.remove(item)
+         except:
+            pass
+         
+         self.QUEUE.append(item)
+         self.cv.notify()
+   
    def appendleft(self, item):
       with self.cv:
          self.QUEUE.appendleft(item) 
@@ -289,7 +440,12 @@ class HTTPGetHandler(BaseHTTPRequestHandler):
             self.server.context.resume()
             self.send_response(200)
             self.end_headers()
-             
+            
+         elif parsed_path.path.lower() == '/rescan'.lower():
+            self.server.context.rescan()
+            self.send_response(200)
+            self.end_headers()
+            
       except Exception as e:
          self.send_response(400)
          self.end_headers()
@@ -297,13 +453,12 @@ class HTTPGetHandler(BaseHTTPRequestHandler):
 
 class Archiver(object):
    
-   def __init__(self, dirs, watchdirs, handlers, concurrent=1, resend_wait=300):
+   def __init__(self, dirs, watchdirs, handlers, concurrent=2, resend_wait=600):
       self.filelogger = logging.getLogger('archive-success')
       self.logger = logging.getLogger('archive')
       
       self.q = Dequeue()
       self.resendq = Dequeue()
-      #self.pool = ActivePool()
       self.handlers = handlers
       self.sem = threading.Semaphore(concurrent)
       self.resend_wait = resend_wait
@@ -320,6 +475,9 @@ class Archiver(object):
          if type(dirs) is not list:
             raise Exception('dirs not a list')
       
+      self.dirs = dirs
+      self.watchdirs = watchdirs
+      
       self.logger.info('walking dirs: %s' % (dirs))
       self.logger.info('watching dirs: %s' % (watchdirs))
       
@@ -333,8 +491,9 @@ class Archiver(object):
          
          def process_IN_CLOSE_WRITE(self, event):
             if event.dir is False:
-               self.ad.logger.info('new file added to filesystem; file: %s' % (event.pathname))
-               self.ad.q.append(event.pathname)
+               if self._findHandler(event.pathname):
+                  self.ad.logger.info('new file added to filesystem; file: %s' % (event.pathname))
+                  self.ad.q.appendUnique(event.pathname)
       
       # walk all the specified directories and add all the files   
       for d in dirs:
@@ -397,9 +556,17 @@ class Archiver(object):
    
    
    def _walkPath(self, dir):
+      added = 0
+      
       for folder, subs, files in os.walk(dir):
          for f in sorted(files):
-            self.q.append(folder + '/' + f)
+            path = folder + '/' + f
+            # only add files for which there is a handler
+            if self._findHandler(path):
+               self.q.appendUnique(path)
+               added += 1
+               
+      return added
    
    
    def _findHandler(self, file):
@@ -412,10 +579,7 @@ class Archiver(object):
    
    def _worker(self, handler, file):
       
-      #thd = threading.currentThread()
       try:   
-         #self.pool.makeActive(thd)
-         
          try:
             # if we have already transfered this file then just ignore
             if handler.hasTransfered(file) is False:
@@ -447,7 +611,6 @@ class Archiver(object):
          
       
       finally:
-         #self.pool.makeInactive(thd)
          self.sem.release()
    
    
@@ -485,6 +648,14 @@ class Archiver(object):
          self.pausebool = True
          
       self.logger.info('pause called')
+   
+   def rescan(self):
+      added = 0
+      self.logger.info('rescan called')
+      for d in self.dirs:
+         added += self._walkPath(d)
+         
+      self.logger.info('rescan complete; unique files added: %s' % str(added))
    
    def resume(self):
       with self.pausecond:
