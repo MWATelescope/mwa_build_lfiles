@@ -720,13 +720,19 @@ class Archiver(object):
 
    def _processQueue(self):
       
-      while True:
+      while True:         
          # pause the thread
          with self.pausecond:
             while self.pausebool is True:
-         	   self.pausecond.wait(1)
+               self.pausecond.wait(1)
          
          self.sem.acquire()
+         
+         # pause the thread
+         with self.pausecond:
+            if self.pausebool is True:
+               self.sem.release()
+               continue
          
          file = self.q.popleft()
 
