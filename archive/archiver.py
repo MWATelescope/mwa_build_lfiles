@@ -393,7 +393,11 @@ class MWAVoltageDataFileHandler(object):
             value = self.obsMap.get(obs)
             if value:
                value = value - 1
-               self.obsMap[obs] = value
+                # we dont want to display the obs id with no files left
+               if value == 0:
+                  del self.obsMap[obs]
+               else:
+                  self.obsMap[obs] = value
       except:
          pass
    

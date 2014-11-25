@@ -478,19 +478,18 @@ class FlagProcessor(object):
          and p.projectid not in ('C100', 'C001', 'D0004', 'G0002', 'C105', 'C106', 'D0000', 'D0003', 'D0005') \
          and dataquality <> 3 and dataquality <> 4 and dataquality <> 5 group by a.starttime order by starttime desc;")
 
-         proj = ''
-         first = True
+         #proj = ''
+         #first = True
          obs = []
 
          rows = cursor.fetchall()
          if rows:
             for r in rows:
-               if first:
-                  proj = r[2]
-                  first = False
-               elif proj != r[2]:
-                  break
-               
+               #if first:
+               #   proj = r[2]
+               #   first = False
+               #elif proj != r[2]:
+               #   break
                obs.insert(0, (r[0], r[1]))
 
          return obs
