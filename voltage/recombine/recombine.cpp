@@ -1,3 +1,38 @@
+/*
+    sec_tick (1 bit). Is this the first packet for this EDT lane, for this one
+        second of data? 0=No, 1=Yes.  Only found on the very first packet of that
+        second.  If set, then the mgt_bank, mgt_channel, mgt_group & mgt_frame
+        will always be 0.
+
+    pfb_id (2 bits) Which physical fPFB board generated this stream [0-3].
+        This defines the set of receivers & tiles the data refers to.
+        An EDT lane's pfb_id will remain constant unless physically shifted
+        to a different fPFB via a cable swap.
+
+    mgt_id (3 bits) Which 1/8 of coarse channels this rocketIO lane contains.
+        Should be masked with 0x7, not 0xf.  Contains [0-7] inclusive.
+        An EDT lane's mgt_id will remain constant unless physically shifted
+        to a different port on the fPFB via a cable swap.
+
+    Within an EDT lane, the data packets cycle in the following order, listed from
+        slowest to fastest.
+
+    mgt_bank (5 bits) Which one of the twenty 50mS time banks in the current
+         second is this one? [0-19] [0-0x13].
+
+    mgt_channel (5 bits) Which coarse channel [0-23] [0-0x17] does the packet
+        relate to?
+
+    mgt_group (2 bits) Which 40KHz wide packet of the contiguous 160KHz does
+         this packet contain the 4 x 10Khz samples for? [0-3]
+
+    mgt_frame (5 bits) Which time stamp within a 50mS block this packet is.
+        [0-499] or [0-0x1F3].  Cycles fastest.  Loops back to 0 after 0x1F3.
+        There are 20 complete cycles in a second.
+
+        Author: D.Pallot 2014 ICRAR
+*/
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string>
@@ -21,6 +56,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include "fitsio.h"
 
 #include "recombine.h"
 
@@ -39,17 +75,127 @@ static unsigned short byte_to_sum[256] = {
 #define ICS_BUFF 30720000
 #define COURSE_CHAN_BUFF 64000*256
 
+int read_metadata(const char* fitsfilename, course_chan_freq* course_chan_out, tile_flags* tile_flag_out)
+{
+	fitsfile *fptr;
+	char* value;
+	int status = 0;
 
-int read_from_input(course_chan_input_matrix* matrix, course_chan_input_array* input)
+	fits_open_file(&fptr, fitsfilename, READONLY, &status);
+	if (status != 0) {
+		fits_report_error(stderr, status);
+		fits_close_file(fptr, &status);
+		return -1;
+	}
+
+	status = 0;
+	fits_read_key_longstr(fptr, "CHANNELS", &value, NULL, &status);
+	if (status != 0) {
+		fits_report_error(stderr, status);
+		fits_close_file(fptr, &status);
+		return -1;
+	}
+
+	char chans[1024];
+	strcpy(chans, value);
+	free(value);
+
+	//printf("%s\n", chans);
+
+	unsigned int ch_index = 0;
+	char* token = NULL;
+	char* saveptr = NULL;
+	char* ptr = chans;
+
+	while ((token = strtok_r(ptr, ",", &saveptr)) != NULL) {
+	    course_chan_out->m_freq[ch_index] = atoi(token);
+	    ch_index++;
+	    ptr = saveptr;
+	}
+
+	if (ch_index != 24) {
+		printf("Did not find 24 channels in meta data fits file.\n");
+		fits_close_file(fptr, &status);
+		return -1;
+	}
+
+	char extname[FLEN_VALUE];
+	int anynull, hdutype;
+	long int rows = 0;
+	status = 0;
+
+	if (fits_movabs_hdu(fptr, 2, &hdutype, &status) != 0) {
+		printf("Error moving to binary table in fits file.\n");
+		fits_close_file(fptr, &status);
+		return -1;
+	}
+
+	if (hdutype != BINARY_TBL) {
+		printf("Binary table not found.\n");
+		fits_close_file(fptr, &status);
+		return -1;
+	}
+
+	if (fits_get_num_rows(fptr, &rows, &status) != 0) {
+		printf("Could not get number of rows in binary table.\n");
+		fits_close_file(fptr, &status);
+		return -1;
+	}
+
+	if (rows != 256) {
+		printf("Number of rows in binary table != 256.\n");
+		fits_close_file(fptr, &status);
+		return -1;
+	}
+
+	char nullstring[] = "NULL";
+	char flags[256];
+
+	if (fits_read_col(fptr, TBYTE, 7, 1, 1, 256, nullstring, &flags, &anynull, &status) != 0) {
+		printf("Could not read flag data from binary table.\n");
+		fits_close_file(fptr, &status);
+		return -1;
+	}
+
+	fits_close_file(fptr, &status);
+
+	memcpy(tile_flag_out->m_flags[0], flags, 64);
+	memcpy(tile_flag_out->m_flags[1], flags+64, 64);
+	memcpy(tile_flag_out->m_flags[2], flags+128, 64);
+	memcpy(tile_flag_out->m_flags[3], flags+192, 64);
+
+	// check our flag table is not all zeros
+	unsigned int totalFlagged = 0;
+
+	for (int i = 0; i < 4; ++i) {
+		for (int j = 0; j < 64; j++) {
+			if (tile_flag_out->m_flags[i][j])
+				totalFlagged++;
+		}
+	}
+
+	if (totalFlagged >= 256) {
+		printf("All the tiles are flagged out.\n");
+		fits_close_file(fptr, &status);
+		return -1;
+	}
+
+	return 0;
+
+}
+
+
+int read_from_input(course_chan_input_matrix* matrix, course_chan_input_array* input, tile_flags* flags)
 {
 	static bool first_run = true;
 
 	if (first_run) {
 
 		for (int i = 0; i < 4; i++)
-			for (int j = 0; j < 8; j++)
+			for (int j = 0; j < 8; j++) {
+				matrix->m_contributing_tiles[i][j] = 64;
 				matrix->m_input_matrix[i][j].pad_input = true;
-
+			}
 
 		for (int i = 0; i < 32; ++i) {
 
@@ -93,10 +239,19 @@ int read_from_input(course_chan_input_matrix* matrix, course_chan_input_array* i
 			matrix->m_input_matrix[rx_index][freq_index].pad_input = false;
 		}
 
+		unsigned int pfb_tile_flag_count = 0;
 
-		for (int i = 0; i < 4; i++)
-			for (int j = 0; j < 8; j++)
-				// if this entry in the matrix does not have a stream, then pad it's buffer with all zeros
+		for (int i = 0; i < 4; i++) {
+
+			pfb_tile_flag_count = 0;
+
+			for (int j = 0; j < 64; ++j) {
+				if (flags->m_flags[i][j])
+					pfb_tile_flag_count++;
+			}
+
+			for (int j = 0; j < 8; j++) {
+				// if this entry in the matrix does not have a stream, then pad it's buffer with all zeros and make contributing tiles zero
 				if (matrix->m_input_matrix[i][j].pad_input == true) {
 					char* buff = (char*)malloc(PACKETS_PER_50MS * PACKET_SIZE_BYTES);
 					if (buff == NULL)
@@ -105,8 +260,14 @@ int read_from_input(course_chan_input_matrix* matrix, course_chan_input_array* i
 					memset(buff, 0, sizeof(buff));
 
 					matrix->m_input_matrix[i][j].m_buff = buff;
+					matrix->m_contributing_tiles[i][j] = 0;
 				}
-
+				else
+				{
+					matrix->m_contributing_tiles[i][j] -= pfb_tile_flag_count;
+				}
+			}
+		}
 
 		first_run = false;
 	}
@@ -241,7 +402,7 @@ inline int zero_copy_buffer_write(int out_fd, char* buffer, size_t buffsize)
 }
 
 
-int recombine(course_chan_input_array* input, course_chan_output_array* output, ics_handle* ics_out, unsigned int course_swap_index, bool skipics, bool skipcourse)
+int recombine(course_chan_input_array* input, course_chan_output_array* output, ics_handle* ics_out, unsigned int course_swap_index, tile_flags* flags, bool skipics, bool skipcourse)
 {
 	int retcode = 0;
 
@@ -289,7 +450,7 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 
 		memset(file_buffer_index, 0, sizeof(file_buffer_index));
 
-		int read = read_from_input(&inputs, input);
+		int read = read_from_input(&inputs, input, flags);
 		if (read < 0) {
 			retcode = errno;
 			goto Error;
@@ -331,7 +492,8 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 									}
 									else {
 										for (unsigned int tile = 0; tile < 64; ++tile) {
-											ics += byte_to_sum[(unsigned char)mem[tile]];
+											if (flags->m_flags[pfb_no][tile] == 0)
+												ics += byte_to_sum[(unsigned char)mem[tile]];
 										}
 									}
 								}
@@ -339,12 +501,19 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 							} // end 4 lots of 64
 
 							if (!skipics) {
+
+								unsigned int tile_contrib_for_lane = 0;
+								for (int i = 0; i < 4; ++i)
+									tile_contrib_for_lane += inputs.m_contributing_tiles[i][lane_id];
+
 								// normalisation: if at least 1 input has data then we will scale for missing inputs
-								if (deadblocks < 4) {
-									// 5: the number that Dr Brian (1st class honors Magnetic Therapy) pulled out of his ass
+								if (tile_contrib_for_lane > 0) {
+									// 5: the number that Dr Brian (1st class honors Magnetic Therapy) pulled out of his arse
 									// vague justification: if avg amplitude was the maximum allowed at any phase then total sum would still fit in one byte (char)
 									// (256-deadblocks*64): normalise based on the number of contributing tiles
-									ics = (ics * 5) / (256-deadblocks*64);
+									//ics = (ics * 5) / (256-deadblocks*64);
+
+									ics = (ics * 5) / tile_contrib_for_lane;
 									if (ics > 255)
 										ics = 255; // clipping to a bytes worth for demotion to char; should only occur once other parts of system are non-linear
 

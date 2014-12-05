@@ -19,7 +19,7 @@
 
 
 void print_usage() {
-    printf("Usage: recombine -f <file list> || -g <input file list> -o <obsid> -t <secondid> -i <output dir> -d <course channel freq list> -c <skip course chan> -s <skip ICS> \n");
+    printf("Usage: recombine -o <obsid> -t <secondid> -m <meta-data fits> -i <output dir> -c <skip course chan> -s <skip ICS> -f <file list> or -g <input file list>\n");
 }
 
 
@@ -30,16 +30,15 @@ int main(int argc, char **argv) {
 	char *ivalue = NULL;
 	char *gvalue = NULL;
 	char *tvalue = NULL;
+	char *mvalue = NULL;
 	int index;
 	int c;
 
 	opterr = 0;
 
 	std::vector<std::string> fv;
-	std::vector<int> cv;
 
-
-	while ((c = getopt(argc, argv, "csg:f:o:i:d:t:")) != -1) {
+	while ((c = getopt(argc, argv, "csg:f:o:i:t:m:")) != -1) {
 		switch (c)
 		{
 			case 'c':
@@ -50,40 +49,12 @@ int main(int argc, char **argv) {
 				sflag = true;
 				break;
 
-			case 'd':
-				{
-					optind--;
-					for(;optind < argc && *argv[optind] != '-'; optind++) {
-
-						char *endptr = NULL;
-
-						errno = 0;
-						int val = strtol(argv[optind], &endptr, 10);
-
-						// Check for various possible errors
-						if ((errno == ERANGE && (val == LONG_MAX || val == LONG_MIN)) || (errno != 0 && val == 0)) {
-							perror("strtol");
-							exit(EXIT_FAILURE);
-						}
-
-						if (val < 0) {
-							fprintf(stderr, "Course frequency channel can not be less than 0\n");
-							exit(EXIT_FAILURE);
-						}
-
-						if (endptr == argv[optind]) {
-							fprintf(stderr, "Invalid course frequency channel: %s\n", argv[optind]);
-							exit(EXIT_FAILURE);
-						}
-
-						cv.push_back(val);
-					}
-				}
-				break;
-
-
 			case 'g':
 				gvalue = optarg;
+				break;
+
+			case 'm':
+				mvalue = optarg;
 				break;
 
 			case 'f':
@@ -115,10 +86,10 @@ int main(int argc, char **argv) {
 					 fprintf (stderr, "Option -o observation ID of the set.\n");
 				 else if (optopt == 'i')
 					 fprintf (stderr, "Option -i output directory containing 24 course channel files.\n");
-				 else if (optopt == 'd')
-					 fprintf (stderr, "Option -d course channel list (24 values comma separated).\n");
 				 else if (optopt == 't')
 					 fprintf (stderr, "Option -t must specify second ID.\n");
+				 else if (optopt == 'm')
+					 fprintf (stderr, "Option -m meta-fits data file for observation.\n");
 				 else if (isprint (optopt))
 					 fprintf (stderr, "Unknown option.\n");
 				 else
@@ -150,29 +121,26 @@ int main(int argc, char **argv) {
 		exit(EXIT_FAILURE);
 	}
 
+	if (mvalue == NULL) {
+		printf("Invalid command line, meta-data fits file not specified\n");
+		print_usage();
+		exit(EXIT_FAILURE);
+	}
+
 	if (fv.size() == 0 && gvalue == NULL) {
 		printf("Invalid command line, list of input files or a file containing filenames not specified\n");
 		print_usage();
 		exit(EXIT_FAILURE);
 	}
 
-	if (fv.size() != 0 && gvalue != NULL) {
-		printf("Invalid command line, can not specify both list of input files or a file containing filenames\n");
-		print_usage();
-		exit(EXIT_FAILURE);
-	}
-
-	if (cv.size() != 24) {
-		printf("Invalid command line, must specify exactly 24 course channel frequencies\n");
-		print_usage();
-		exit(EXIT_FAILURE);
-	}
-
 	course_chan_freq in, out;
-	unsigned int course_swap_index = 0;
+	tile_flags tileflags;
 
-	for (int i = 0; i < cv.size(); i++)
-		in.m_freq[i] = cv[i];
+	if (read_metadata(mvalue, &in, &tileflags) != 0) {
+		exit(EXIT_FAILURE);
+	}
+
+	unsigned int course_swap_index = 0;
 
 	for (int i = 0; i < 24; i++) {
 		for (int j = i + 1; j < 24; j++) {
@@ -257,7 +225,7 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	ret = recombine(&input, &output, &ics_handle, course_swap_index, sflag, cflag);
+	ret = recombine(&input, &output, &ics_handle, course_swap_index, &tileflags, sflag, cflag);
 	if (ret != 0) {
 		printf("%s\n", strerror(errno));
 		return EXIT_FAILURE;
