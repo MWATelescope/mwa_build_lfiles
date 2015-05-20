@@ -493,7 +493,12 @@ int recombine(course_chan_input_array* input, course_chan_output_array* output, 
 									else {
 										for (unsigned int tile = 0; tile < 64; ++tile) {
 											if (flags->m_flags[pfb_no][tile] == 0)
-												ics += byte_to_sum[(unsigned char)mem[tile]];
+												// was:  ics += byte_to_sum[(unsigned char)mem[tile]];
+												ics += byte_to_sum[(unsigned char)mem[((tile&0x30)>>4)|((tile&0x0f)<<2)]];
+       												// m_flags is sorted in tile order 0,1,2,3,4... The mem array is sorted 0,16,32,48,1,17,33,49,2,18,…,15,31,47,63
+       												// The complex dereferencing for the mem array index is to undo this weird order that fPFB sorts it into
+       												// See ICD_PFB_CB_32T.doc for more detail.
+
 										}
 									}
 								}
