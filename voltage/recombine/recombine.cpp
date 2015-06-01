@@ -699,7 +699,7 @@ int open_input_from_file(course_chan_input_array* input)
 int open_output_to_file(course_chan_output_array* output)
 {
 	for (int i = 0; i < 24; i++)
-		if ((output->m_handles[i].m_handle = open(output->m_handles[i].m_id, O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU)) < 0)
+		if ((output->m_handles[i].m_handle = open(output->m_handles[i].m_id, O_WRONLY | O_CREAT | O_TRUNC, (S_IRWXU | S_IRGRP))) < 0)
 			return errno;
 
 	return 0;
