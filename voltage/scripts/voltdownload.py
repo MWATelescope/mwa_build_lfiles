@@ -98,16 +98,16 @@ def queryObs(obs, host, type, timefrom, duration):
       request = urllib2.Request(url)
       response = urllib2.urlopen(request)
       
-      resultbuffer = ''
+      resultbuffer = []
       while True:
-         result = response.read(32768)
-         if result:
-            resultbuffer = resultbuffer + result
-         else:
-            break
+        result = response.read(32768)
+        if not result:
+          break
+
+        resultbuffer.append(result)
 
       keymap = {}
-      files = json.loads(resultbuffer)['files']
+      files = json.loads(''.join(resultbuffer))['files']
       if processRange:
          time = None
          for f, v in files.iteritems():
@@ -158,7 +158,7 @@ def worker(url, size, filename, s, out, stat, bufsize, prestage):
         request.add_header("Authorization", "Basic %s" % base64string)   
         request.add_header('prestagefilelist', prestage)
         
-        u = urllib2.urlopen(request, timeout=3600)
+        u = urllib2.urlopen(request)
         u.fp.bufsize = bufsize
         
         # get file size
@@ -168,23 +168,17 @@ def worker(url, size, filename, s, out, stat, bufsize, prestage):
         # open file for writing
         f = open(out + filename, 'wb')
         
-        current = 0
         file_size_dl = 0
-        block_sz = bufsize
-        
-        while file_size_dl < file_size:
-            buffer = u.read(block_sz)
-            if buffer:
-                f.write(buffer)
+        while True:
+            buff = u.read(bufsize)
+            if not buff:
+              break
 
-                current = len(buffer)
-                file_size_dl += current
-                
-            else:
-                if file_size_dl != file_size:
-                    raise Exception("size mismatch %s %s" % str(file_size), str(file_size_dl))
-                
-                break
+            f.write(buff)
+            file_size_dl += len(buff)
+
+        if file_size_dl != file_size:
+          raise Exception("size mismatch %s %s" % str(file_size), str(file_size_dl))
 
         stat.fileComplete(filename)
         
@@ -201,10 +195,10 @@ def worker(url, size, filename, s, out, stat, bufsize, prestage):
         stat.fileError("%s [ERROR] %s %s" % (time.strftime("%c"), filename, str(exp) ))
         
     finally:
-        if u != None:
+        if u:
             u.close()
             
-        if f != None:
+        if f:
             f.flush()
             f.close()
             
