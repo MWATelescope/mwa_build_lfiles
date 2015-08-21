@@ -273,13 +273,13 @@ def main():
         prestageStr = json.dumps(filelist)
      
         if options.out == None or len(options.out) == 0:
-            options.out = './'
+            options.out = './' + options.out + '/'
 
         # check we have a forward slash before file
         if options.out[len(options.out)-1] != '/':
              options.out += '/'
 
-        dir = options.out + options.obs + '/'
+        dir = options.out # + options.obs + '/'
         if not os.path.exists(dir):
             os.makedirs(dir)
         
