@@ -251,7 +251,7 @@ def main():
         
         print '%s [INFO] Finding observation %s' % (time.strftime("%c"), options.obs)
 
-        fileresult = queryObs(options.obs, 'ngas01.ivec.org', options.filetype, options.timefrom, options.duration)
+        fileresult = queryObs(options.obs, 'mwa-metadata01.pawsey.org.au', options.filetype, options.timefrom, options.duration)
         if len(fileresult) <= 0:
             print '%s [INFO] No files found for observation %s and file type %s' % (time.strftime("%c"), options.obs, int(options.filetype))
             sys.exit(1)
