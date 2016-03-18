@@ -22,6 +22,9 @@ install: all
 	mkdir -p $(prefix)/bin
 	$(INSTALL) $(TARGETS) $(prefix)/bin
 
+uninstall:
+	$(foreach target,$(TARGETS),rm -f $(prefix)/bin/$(target);)
+
 read_mwac: read_mwac.c
 	$(CC) $(CFLAGS) $(CFITSIO_INCS) $^ -o $@ $(CFITSIO_LIBS) -lm
 
